@@ -344,18 +344,19 @@
     },
     {
       "id": "033-http-json-api",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "status": "approved",
       "immutable": true,
       "path": "specs/033-http-json-api/spec.md",
       "governs": [
         "crates/traverse-cli/",
-        "crates/traverse-runtime/"
+        "crates/traverse-runtime/",
+        "specs/033-http-json-api/openapi.yaml"
       ]
     },
     {
       "id": "034-programmatic-registration",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "status": "approved",
       "immutable": true,
       "path": "specs/034-programmatic-registration/spec.md",
@@ -366,7 +367,7 @@
     },
     {
       "id": "035-multi-agent-isolation",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "status": "approved",
       "immutable": true,
       "path": "specs/035-multi-agent-isolation/spec.md",
