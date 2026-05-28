@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use traverse_contracts::{
-    BinaryFormat, CapabilityContract, Condition, Entrypoint, EntrypointKind, Execution,
-    ExecutionConstraints, ExecutionTarget, FilesystemAccess, HostApiAccess, Lifecycle,
+    BinaryFormat, CapabilityContract, Condition, Entrypoint, EntrypointKind, EventReference,
+    Execution, ExecutionConstraints, ExecutionTarget, FilesystemAccess, HostApiAccess, Lifecycle,
     NetworkAccess, Owner, Provenance, ProvenanceSource, SchemaContainer, ServiceType, SideEffect,
     SideEffectKind,
 };
@@ -318,6 +318,10 @@ fn subscribable_capability_publishes_events() -> Result<(), String> {
     // Subscribable contract
     let mut contract = base_contract(ServiceType::Subscribable);
     contract.event_trigger = Some("dev.traverse.router.test.triggered".to_string());
+    contract.emits = vec![EventReference {
+        event_id: event_type.to_string(),
+        version: "1.0.0".to_string(),
+    }];
 
     let request = RouterRequest {
         capability_id: "router.tests.subject".to_string(),
@@ -337,6 +341,58 @@ fn subscribable_capability_publishes_events() -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     assert_eq!(poll.events.len(), 1, "one event must be delivered");
     assert_eq!(poll.events[0].event.event_type, event_type);
+
+    Ok(())
+}
+
+#[test]
+fn undeclared_event_emission_fails_execution_and_is_recorded() -> Result<(), String> {
+    let trace_store = Arc::new(Mutex::new(TraceStore::new()));
+    let event_type = "dev.traverse.router.test.undeclared";
+    let broker = broker_with_event(event_type)?;
+    let broker_arc: Arc<dyn EventBroker> = broker;
+
+    let router = make_router_with_native(
+        json!({ "done": true }),
+        Arc::clone(&trace_store),
+        Arc::clone(&broker_arc),
+    );
+
+    let mut contract = base_contract(ServiceType::Subscribable);
+    contract.event_trigger = Some("dev.traverse.router.test.triggered".to_string());
+    contract.emits = Vec::new();
+
+    let request = RouterRequest {
+        capability_id: "router.tests.subject".to_string(),
+        artifact_type: ArtifactType::Native,
+        contract,
+        target_hint: Some(ExecutionTarget::Local),
+        runtime_snapshot: idle_snapshot(),
+        input: json!({}),
+        executor_capability: native_executor_capability("router.tests.subject"),
+        emitted_events: vec![sample_event(event_type)],
+    };
+
+    let err = must_err(router.execute(request), "expected contract violation")?;
+    assert!(
+        matches!(err, RouterError::ContractViolation(_)),
+        "expected ContractViolation, got {err:?}"
+    );
+
+    let store = trace_store
+        .lock()
+        .map_err(|_| "trace store lock poisoned".to_string())?;
+    let traces = store.list_public(Some("router.tests.subject"));
+    assert!(
+        traces.iter().any(|trace| {
+            trace.outcome == traverse_runtime::trace::TraceOutcome::Failure
+                && trace
+                    .violations
+                    .iter()
+                    .any(|v| v.violation_code == "undeclared_event_emission")
+        }),
+        "expected a failure trace entry with undeclared_event_emission"
+    );
 
     Ok(())
 }
@@ -389,10 +445,16 @@ fn stateless_capability_does_not_publish_events() -> Result<(), String> {
 fn router_error_display_covers_all_variants() {
     use traverse_runtime::router::RouterError;
 
+    use traverse_contracts::ViolationRecord;
     let cases: Vec<RouterError> = vec![
         RouterError::PlacementFailed(PlacementError::NoEligibleTarget),
         RouterError::ExecutorNotFound("Wasm".to_string()),
         RouterError::ExecutionFailed("test failure".to_string()),
+        RouterError::ContractViolation(vec![ViolationRecord::new(
+            "undeclared_event_emission",
+            "test.cap",
+            "test message",
+        )]),
         RouterError::TraceLockPoisoned,
     ];
 

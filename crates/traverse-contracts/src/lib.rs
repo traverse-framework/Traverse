@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashSet};
 
+pub mod violations;
+pub use violations::ViolationRecord;
+
 const CAPABILITY_CONTRACT_KIND: &str = "capability_contract";
 const EVENT_CONTRACT_KIND: &str = "event_contract";
 const SUPPORTED_SCHEMA_VERSION: &str = "1.0.0";

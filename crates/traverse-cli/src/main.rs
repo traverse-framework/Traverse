@@ -14,6 +14,7 @@ use std::fs;
 use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use traverse_contracts::ViolationRecord;
 use traverse_contracts::{
     EventContract, EventValidationContext, parse_event_contract, validate_event_contract,
 };
@@ -1658,19 +1659,6 @@ fn load_registered_bundle(manifest_path: &Path) -> Result<RegisteredBundle, CliE
     let mut event_records = Vec::new();
     let mut workflow_records = Vec::new();
 
-    for capability in &bundle.capabilities {
-        let request = build_capability_registration(&bundle, capability)?;
-        let outcome = capability_registry.register(request).map_err(|f| {
-            let msg = render_registry_failure(f.clone());
-            map_registry_failure(&f, msg)
-        })?;
-        capability_records.push(format_capability_record(
-            &outcome.record.id,
-            &outcome.record.version,
-            outcome.record.implementation_kind,
-        ));
-    }
-
     for event in &bundle.events {
         let outcome = event_registry
             .register(EventRegistration {
@@ -1683,6 +1671,54 @@ fn load_registered_bundle(manifest_path: &Path) -> Result<RegisteredBundle, CliE
             })
             .map_err(|f| CliError::RegistrationConflict(render_event_registry_failure(f)))?;
         event_records.push(format!("{}@{}", outcome.record.id, outcome.record.version));
+    }
+
+    let mut gate_violations = Vec::new();
+    for capability in &bundle.capabilities {
+        for referenced in capability
+            .contract
+            .emits
+            .iter()
+            .chain(capability.contract.consumes.iter())
+        {
+            let exists = event_registry
+                .find_exact(
+                    LookupScope::PreferPrivate,
+                    &referenced.event_id,
+                    &referenced.version,
+                )
+                .is_some();
+            if !exists {
+                gate_violations.push(ViolationRecord::new(
+                    "unresolved_event_reference",
+                    capability.path.display().to_string(),
+                    format!(
+                        "capability references missing event {}@{}",
+                        referenced.event_id, referenced.version
+                    ),
+                ));
+            }
+        }
+    }
+
+    if !gate_violations.is_empty() {
+        return Err(CliError::ValidationFailed(render_violation_records(
+            "registration-time contractual enforcement gate failed",
+            &gate_violations,
+        )));
+    }
+
+    for capability in &bundle.capabilities {
+        let request = build_capability_registration(&bundle, capability)?;
+        let outcome = capability_registry.register(request).map_err(|f| {
+            let msg = render_registry_failure(f.clone());
+            map_registry_failure(&f, msg)
+        })?;
+        capability_records.push(format_capability_record(
+            &outcome.record.id,
+            &outcome.record.version,
+            outcome.record.implementation_kind,
+        ));
     }
 
     for workflow in &bundle.workflows {
@@ -1710,6 +1746,23 @@ fn load_registered_bundle(manifest_path: &Path) -> Result<RegisteredBundle, CliE
         event_records,
         workflow_records,
     })
+}
+
+fn render_violation_records(header: &str, violations: &[ViolationRecord]) -> String {
+    let mut lines = Vec::new();
+    lines.push(header.to_string());
+    let mut sorted = violations.to_vec();
+    sorted.sort_by(|a, b| {
+        (a.path.as_str(), a.violation_code.as_str())
+            .cmp(&(b.path.as_str(), b.violation_code.as_str()))
+    });
+    for v in sorted {
+        lines.push(format!(
+            "- [{}] {}: {}",
+            v.violation_code, v.path, v.message
+        ));
+    }
+    lines.join("\n")
 }
 
 fn map_registry_failure(failure: &traverse_registry::RegistryFailure, msg: String) -> CliError {

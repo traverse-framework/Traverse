@@ -517,7 +517,8 @@ fn map_runtime_error(code: RuntimeErrorCode, message: &str) -> McpError {
         RuntimeErrorCode::CapabilityAmbiguous => McpErrorCode::AmbiguousMatch,
         RuntimeErrorCode::CapabilityNotRunnable
         | RuntimeErrorCode::PlacementUnsupported
-        | RuntimeErrorCode::OutputValidationFailed => McpErrorCode::ValidationFailed,
+        | RuntimeErrorCode::OutputValidationFailed
+        | RuntimeErrorCode::ContractViolation => McpErrorCode::ValidationFailed,
         RuntimeErrorCode::ExecutionFailed => McpErrorCode::ExecutionFailed,
     };
     McpError {

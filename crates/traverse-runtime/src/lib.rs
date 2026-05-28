@@ -12,7 +12,9 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::fmt;
-use traverse_contracts::{ExecutionTarget, HostApiAccess, Lifecycle, NetworkAccess};
+use traverse_contracts::{
+    ExecutionTarget, HostApiAccess, Lifecycle, NetworkAccess, ViolationRecord,
+};
 use traverse_registry::{
     CapabilityRegistration, CapabilityRegistry, DiscoveryQuery, ImplementationKind, LookupScope,
     RegistrationOutcome, RegistryFailure, RegistryScope, ResolutionError, ResolvedCapability,
@@ -555,6 +557,7 @@ pub enum RuntimeErrorCode {
     ArtifactMissing,
     ExecutionFailed,
     OutputValidationFailed,
+    ContractViolation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1009,6 +1012,7 @@ where
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn execute_selected(
         &self,
         attempt: AttemptContext,
@@ -1024,6 +1028,32 @@ where
             selection,
         };
         let requested_target = context.attempt.request.context.requested_target;
+
+        if contains_drafts_segment(&selected.record.contract_path) {
+            let violation = ViolationRecord::new(
+                "draft_artifact_not_executable",
+                selected.record.contract_path.clone(),
+                "draft artifacts are quarantined under drafts/ and must not be executable",
+            );
+            let error = runtime_error(
+                RuntimeErrorCode::ContractViolation,
+                "draft artifacts are not executable",
+                json!({"violations": [violation]}),
+            );
+            return pre_execution_failure_outcome(
+                context,
+                PreExecutionFailure {
+                    artifact_ref: Some(selected.record.artifact_ref.clone()),
+                    failure_reason: ExecutionFailureReason::ArtifactNotRunnable,
+                    placement: placement_not_attempted(
+                        requested_target,
+                        PlacementDecisionReason::SelectionNotReached,
+                    ),
+                    error,
+                },
+            );
+        }
+
         let placement = match resolve_placement(requested_target) {
             Ok(placement) => placement,
             Err(error) => {
@@ -2029,6 +2059,12 @@ fn content_digest(value: &Value) -> String {
         hash = hash.wrapping_mul(0x0000_0001_0000_01b3);
     }
     format!("0.1.0:{hash:016x}")
+}
+
+fn contains_drafts_segment(path: &str) -> bool {
+    path.replace('\\', "/")
+        .split('/')
+        .any(|segment| segment == "drafts")
 }
 
 struct AttemptContext {

@@ -1,6 +1,7 @@
 //! Public (CloudEvents-formatted) trace entry.
 
 use serde::{Deserialize, Serialize};
+use traverse_contracts::ViolationRecord;
 
 /// Outcome of a capability execution recorded in the public trace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +35,9 @@ pub struct PublicTraceEntry {
     pub outcome: TraceOutcome,
     /// Wall-clock duration of the execution in milliseconds.
     pub duration_ms: u64,
+    /// Aggregate contractual enforcement violations (if any).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub violations: Vec<ViolationRecord>,
 }
 
 impl PublicTraceEntry {
@@ -58,6 +62,7 @@ impl PublicTraceEntry {
             placement_target,
             outcome,
             duration_ms,
+            violations: Vec::new(),
         }
     }
 }

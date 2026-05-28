@@ -16,7 +16,7 @@ use std::{
 };
 
 use serde_json::Value;
-use traverse_contracts::{CapabilityContract, ServiceType};
+use traverse_contracts::{CapabilityContract, ServiceType, ViolationRecord};
 
 use crate::{
     events::types::{EventBroker, TraverseEvent},
@@ -66,6 +66,8 @@ pub enum RouterError {
     ExecutorNotFound(String),
     /// The selected executor returned an error.
     ExecutionFailed(String),
+    /// Execution violated a governed contract (aggregate violations).
+    ContractViolation(Vec<ViolationRecord>),
     /// The trace store lock was poisoned.
     TraceLockPoisoned,
 }
@@ -76,6 +78,9 @@ impl std::fmt::Display for RouterError {
             Self::PlacementFailed(e) => write!(f, "placement failed: {e:?}"),
             Self::ExecutorNotFound(t) => write!(f, "no executor registered for artifact type: {t}"),
             Self::ExecutionFailed(msg) => write!(f, "execution failed: {msg}"),
+            Self::ContractViolation(violations) => {
+                write!(f, "contract violation: {} violation(s)", violations.len())
+            }
             Self::TraceLockPoisoned => write!(f, "trace store lock is poisoned"),
         }
     }
@@ -169,10 +174,39 @@ impl PlacementRouter {
             Err(e) => return Err(RouterError::ExecutionFailed(format!("{e}"))),
         };
 
+        // --- Step 3.5: Execution-time contractual enforcement gate ---
+        let mut violations = Vec::new();
+        if request.contract.service_type == ServiceType::Subscribable
+            && !request.emitted_events.is_empty()
+        {
+            for event in &request.emitted_events {
+                let declared =
+                    request.contract.emits.iter().any(|decl| {
+                        decl.event_id == event.event_type && decl.version == event.version
+                    });
+                if !declared {
+                    violations.push(ViolationRecord::new(
+                        "undeclared_event_emission",
+                        &request.capability_id,
+                        format!(
+                            "capability emitted undeclared event {}@{}",
+                            event.event_type, event.version
+                        ),
+                    ));
+                }
+            }
+        }
+
+        let outcome = if violations.is_empty() {
+            outcome
+        } else {
+            TraceOutcome::Failure
+        };
+
         // --- Step 4: Write trace ---
         let (trace_id, time) = new_trace_id_and_time();
 
-        let public_entry = PublicTraceEntry::new(
+        let mut public_entry = PublicTraceEntry::new(
             trace_id.clone(),
             request.capability_id.clone(),
             placement_target_str,
@@ -180,6 +214,7 @@ impl PlacementRouter {
             duration_ms,
             time,
         );
+        public_entry.violations.clone_from(&violations);
 
         let input_str = serde_json::to_string(&request.input).unwrap_or_default();
         let output_str = serde_json::to_string(&output).unwrap_or_default();
@@ -192,6 +227,10 @@ impl PlacementRouter {
                 .lock()
                 .map_err(|_| RouterError::TraceLockPoisoned)?;
             store.insert(public_entry, Some(private_entry));
+        }
+
+        if !violations.is_empty() {
+            return Err(RouterError::ContractViolation(violations));
         }
 
         // --- Step 5: Publish events for Subscribable capabilities ---

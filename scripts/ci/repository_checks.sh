@@ -102,6 +102,11 @@ required_files=(
   "specs/governance/approved-specs.json"
   "specs/022-mcp-wasm-server/spec.md"
   "specs/022-mcp-wasm-server/checklists/requirements.md"
+  "specs/033-http-json-api/spec.md"
+  "specs/033-http-json-api/openapi.yaml"
+  "specs/034-programmatic-registration/spec.md"
+  "specs/035-multi-agent-isolation/spec.md"
+  "scripts/ci/openapi_structural_validation.sh"
 )
 
 for file in "${required_files[@]}"; do
@@ -206,6 +211,8 @@ grep -q "discover_events" docs/mcp-real-agent-exercise.md
 grep -q "discover_workflows" docs/mcp-real-agent-exercise.md
 grep -q "execute_entrypoint" docs/mcp-real-agent-exercise.md
 grep -q "render_execution_report" docs/mcp-real-agent-exercise.md
+
+bash scripts/ci/openapi_structural_validation.sh
 grep -q "scripts/smoke.sh" docs/youaskm3-real-shell-validation.md
 grep -q "apps/browser-consumer/README.md" docs/mcp-consumption-validation.md
 grep -q "docs/app-consumable-consumer-bundle.md" README.md

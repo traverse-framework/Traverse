@@ -6,4 +6,6 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 
+bash scripts/ci/contractual_enforcement_gate.sh
+
 echo "Rust checks passed."

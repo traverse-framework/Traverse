@@ -1,0 +1,520 @@
+openapi: 3.1.0
+info:
+  title: Traverse HTTP+JSON Runtime API
+  version: 1.1.0
+  description: App-consumable Traverse runtime, trace, and registration API.
+servers:
+  - url: http://127.0.0.1:8787
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      operationId: getHealthz
+      responses:
+        "200":
+          description: Server health envelope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthEnvelope"
+              examples:
+                ok:
+                  value:
+                    status: ok
+                    version: 0.2.0
+                    api_version: v1
+                    workspace_default: local-default
+                    auth_mode: dev-loopback
+  /v1/workspaces/{workspace_id}/execute:
+    post:
+      summary: Execute a Traverse runtime request
+      operationId: executeRuntimeRequest
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: Prefer
+          in: header
+          required: false
+          schema:
+            type: string
+            enum:
+              - respond-async
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecuteRequest"
+            examples:
+              sync:
+                value:
+                  capability_id: summarize-note
+                  input:
+                    text: Traverse makes portable services consumable.
+              async:
+                value:
+                  mode: async
+                  capability_id: summarize-note
+                  input:
+                    text: Traverse makes portable services consumable.
+      responses:
+        "200":
+          description: Synchronous execution completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutionEnvelope"
+        "202":
+          description: Asynchronous execution accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsyncAcceptedEnvelope"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Problem"
+  /v1/workspaces/{workspace_id}/executions/{execution_id}:
+    get:
+      summary: Fetch execution status
+      operationId: getExecutionStatus
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/ExecutionId"
+      responses:
+        "200":
+          description: Execution status envelope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutionStatusEnvelope"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /v1/workspaces/{workspace_id}/traces/{execution_id}:
+    get:
+      summary: Fetch public execution trace
+      operationId: getExecutionTrace
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/ExecutionId"
+      responses:
+        "200":
+          description: Public trace envelope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicTraceEnvelope"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+  /v1/workspaces/{workspace_id}/capabilities:
+    post:
+      summary: Register a capability
+      operationId: registerCapability
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegistrationRequest"
+      responses:
+        "200":
+          description: Capability was already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegistrationOutcome"
+        "201":
+          description: Capability registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegistrationOutcome"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Problem"
+  /v1/workspaces/{workspace_id}/event-contracts:
+    post:
+      summary: Register an event contract
+      operationId: registerEventContract
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegistrationRequest"
+      responses:
+        "200":
+          description: Event contract was already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegistrationOutcome"
+        "201":
+          description: Event contract registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegistrationOutcome"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Problem"
+  /v1/workspaces/{workspace_id}/workflows:
+    post:
+      summary: Register a workflow
+      operationId: registerWorkflow
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegistrationRequest"
+      responses:
+        "200":
+          description: Workflow was already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegistrationOutcome"
+        "201":
+          description: Workflow registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegistrationOutcome"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Problem"
+  /v1/workspaces/{workspace_id}/bundles:
+    post:
+      summary: Register a bundle atomically
+      operationId: registerBundle
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BundleRegistrationRequest"
+      responses:
+        "200":
+          description: Bundle artifacts were already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BundleRegistrationOutcome"
+        "201":
+          description: Bundle registered atomically
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BundleRegistrationOutcome"
+        "409":
+          $ref: "#/components/responses/Problem"
+        "422":
+          $ref: "#/components/responses/Problem"
+components:
+  parameters:
+    WorkspaceId:
+      name: workspace_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9._-]+$"
+    ExecutionId:
+      name: execution_id
+      in: path
+      required: true
+      schema:
+        type: string
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+  responses:
+    Problem:
+      description: RFC 9457 Problem Details error
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetails"
+  schemas:
+    HealthEnvelope:
+      type: object
+      required:
+        - status
+        - version
+        - api_version
+        - workspace_default
+        - auth_mode
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+        version:
+          type: string
+        api_version:
+          type: string
+          enum:
+            - v1
+        workspace_default:
+          type: string
+        auth_mode:
+          type: string
+          enum:
+            - dev-loopback
+            - bearer-required
+      additionalProperties: true
+    ExecuteRequest:
+      type: object
+      required:
+        - capability_id
+        - input
+      properties:
+        mode:
+          type: string
+          enum:
+            - sync
+            - async
+        capability_id:
+          type: string
+        input:
+          type: object
+      additionalProperties: false
+    ExecutionEnvelope:
+      type: object
+      required:
+        - api_version
+        - execution_id
+        - status
+        - output
+        - links
+      properties:
+        api_version:
+          type: string
+        execution_id:
+          type: string
+        status:
+          type: string
+          enum:
+            - succeeded
+            - failed
+        output:
+          type: object
+        links:
+          $ref: "#/components/schemas/Links"
+      additionalProperties: true
+    AsyncAcceptedEnvelope:
+      type: object
+      required:
+        - api_version
+        - execution_id
+        - status
+        - links
+      properties:
+        api_version:
+          type: string
+        execution_id:
+          type: string
+        status:
+          type: string
+          enum:
+            - accepted
+        links:
+          $ref: "#/components/schemas/Links"
+      additionalProperties: true
+    ExecutionStatusEnvelope:
+      type: object
+      required:
+        - api_version
+        - execution_id
+        - status
+        - created_at
+        - updated_at
+        - links
+      properties:
+        api_version:
+          type: string
+        execution_id:
+          type: string
+        status:
+          type: string
+          enum:
+            - accepted
+            - running
+            - succeeded
+            - failed
+            - cancelled
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        links:
+          $ref: "#/components/schemas/Links"
+      additionalProperties: true
+    PublicTraceEnvelope:
+      type: object
+      required:
+        - api_version
+        - execution_id
+        - trace
+        - links
+      properties:
+        api_version:
+          type: string
+        execution_id:
+          type: string
+        trace:
+          type: object
+          required:
+            - spans
+            - events
+          properties:
+            spans:
+              type: array
+              items:
+                type: object
+            events:
+              type: array
+              items:
+                type: object
+          additionalProperties: true
+        links:
+          $ref: "#/components/schemas/Links"
+      additionalProperties: true
+    RegistrationRequest:
+      type: object
+      required:
+        - artifact
+      properties:
+        scope:
+          type: string
+          enum:
+            - workspace_persisted
+            - session_ephemeral
+        artifact:
+          type: object
+      additionalProperties: false
+    BundleRegistrationRequest:
+      type: object
+      required:
+        - bundle
+      properties:
+        scope:
+          type: string
+          enum:
+            - workspace_persisted
+            - session_ephemeral
+        bundle:
+          type: object
+      additionalProperties: false
+    RegistrationOutcome:
+      type: object
+      required:
+        - api_version
+        - registered
+        - already_registered
+        - artifact_type
+        - artifact_id
+        - version
+        - digest
+        - links
+      properties:
+        api_version:
+          type: string
+        registered:
+          type: boolean
+        already_registered:
+          type: boolean
+        artifact_type:
+          type: string
+        artifact_id:
+          type: string
+        version:
+          type: string
+        digest:
+          type: string
+        links:
+          $ref: "#/components/schemas/Links"
+      additionalProperties: true
+    BundleRegistrationOutcome:
+      type: object
+      required:
+        - api_version
+        - registered
+        - already_registered
+        - outcomes
+      properties:
+        api_version:
+          type: string
+        registered:
+          type: boolean
+        already_registered:
+          type: boolean
+        outcomes:
+          type: array
+          items:
+            $ref: "#/components/schemas/RegistrationOutcome"
+      additionalProperties: true
+    Links:
+      type: object
+      additionalProperties:
+        type: string
+    ProblemDetails:
+      type: object
+      required:
+        - type
+        - title
+        - status
+        - detail
+        - traverse_code
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+        traverse_code:
+          type: string
+      additionalProperties: true

@@ -253,6 +253,36 @@ fn rejects_non_runnable_candidates_before_execution() {
 }
 
 #[test]
+fn rejects_draft_contract_paths_before_execution() {
+    let mut draft = registration(
+        RegistryScope::Private,
+        "content.comments.create-comment-draft",
+        "1.0.0",
+        Lifecycle::Active,
+    );
+    draft.contract_path =
+        "drafts/contracts/content.comments.create-comment-draft/1.0.0/contract.json".to_string();
+
+    let runtime = Runtime::new(registry_with(vec![draft]), EchoExecutor);
+    let outcome = runtime.execute(base_request_exact());
+
+    assert_eq!(
+        outcome.result.error.as_ref().map(|error| error.code),
+        Some(RuntimeErrorCode::ContractViolation)
+    );
+    assert!(outcome.result.error.is_some(), "error must be present");
+    let details = outcome
+        .result
+        .error
+        .as_ref()
+        .map_or_else(|| json!({}), |error| error.details.clone());
+    assert_eq!(
+        details["violations"][0]["violation_code"],
+        "draft_artifact_not_executable"
+    );
+}
+
+#[test]
 fn rejects_non_runtime_lifecycle_candidates() {
     let runtime = Runtime::new(
         registry_with(vec![registration(
