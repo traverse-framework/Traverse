@@ -1580,6 +1580,23 @@ fn handle_connection<E: LocalExecutor + Clone>(
         ("POST", "/v1/capabilities/execute") => {
             handle_execute(&mut stream, &request, state, peer_ip.is_loopback())
         }
+        ("POST", path) if workspace_execute_path(path).is_some() => {
+            let Some(workspace_id) = workspace_execute_path(path) else {
+                return write_json(
+                    &mut stream,
+                    404,
+                    "Not Found",
+                    &error_envelope("not_found", "route not found"),
+                );
+            };
+            handle_execute_workspace(
+                &mut stream,
+                &request,
+                state,
+                peer_ip.is_loopback(),
+                &workspace_id,
+            )
+        }
         ("POST", "/v1/workflows/register") => {
             handle_register_workflow(&mut stream, &request, state, peer_ip.is_loopback())
         }
@@ -1881,6 +1898,158 @@ fn handle_execute<W: Write, E: LocalExecutor + Clone>(
             &error_envelope("internal_error", &e),
         ),
     }
+}
+
+fn handle_execute_workspace<W: Write, E: LocalExecutor + Clone>(
+    w: &mut W,
+    request: &HttpRequest,
+    state: &ApiState<E>,
+    loopback: bool,
+    workspace_id: &str,
+) -> Result<(), String> {
+    let Ok(runtime_request) = parse_execute_runtime_request(w, request) else {
+        return Ok(());
+    };
+
+    let identity =
+        match subject_from_request(&request.headers, state.allow_unauthenticated, loopback) {
+            Ok(identity) => identity,
+            Err(err) => {
+                return write_json(
+                    w,
+                    err.status,
+                    err.reason,
+                    &error_envelope(err.code, &err.message),
+                );
+            }
+        };
+
+    let _ = match ensure_workspace_access(&state.registry_root, workspace_id, &identity) {
+        Ok(metadata) => metadata,
+        Err(err) => {
+            return write_json(
+                w,
+                err.status,
+                err.reason,
+                &error_envelope(err.code, &err.message),
+            );
+        }
+    };
+
+    if request_prefers_async(request) {
+        let execution_id = format!("exec_{}", runtime_request.request_id);
+        return write_json(
+            w,
+            202,
+            "Accepted",
+            &json!({
+                "api_version": "v1",
+                "execution_id": execution_id,
+                "status": "accepted",
+                "links": execution_links(workspace_id, &execution_id, true),
+            }),
+        );
+    }
+
+    let outcome: RuntimeExecutionOutcome =
+        state.with_workspace_mut(workspace_id, |ws| Ok(ws.runtime.execute(runtime_request)))?;
+    let status = if outcome.result.status == RuntimeResultStatus::Error {
+        "failed"
+    } else {
+        "succeeded"
+    };
+
+    write_json(
+        w,
+        200,
+        "OK",
+        &json!({
+            "api_version": "v1",
+            "execution_id": outcome.result.execution_id,
+            "status": status,
+            "output": outcome.result.output,
+            "error": outcome.result.error.as_ref().map(|e| json!({
+                "code": format!("{:?}", e.code).to_lowercase(),
+                "message": e.message,
+            })),
+            "links": execution_links(workspace_id, &outcome.result.execution_id, false),
+        }),
+    )
+}
+
+fn parse_execute_runtime_request<W: Write>(
+    w: &mut W,
+    request: &HttpRequest,
+) -> Result<RuntimeRequest, ()> {
+    let body_str = match std::str::from_utf8(request.body.as_slice()) {
+        Ok(value) => value,
+        Err(e) => {
+            let _ = write_json(
+                w,
+                400,
+                "Bad Request",
+                &error_envelope(
+                    "invalid_request",
+                    &format!("request body is not valid UTF-8: {e}"),
+                ),
+            );
+            return Err(());
+        }
+    };
+
+    match parse_runtime_request(body_str) {
+        Ok(value) => Ok(value),
+        Err(e) => {
+            let _ = write_json(
+                w,
+                400,
+                "Bad Request",
+                &error_envelope(
+                    "invalid_request",
+                    &format!("failed to parse RuntimeRequest: {e}"),
+                ),
+            );
+            Err(())
+        }
+    }
+}
+
+fn workspace_execute_path(path: &str) -> Option<String> {
+    let suffix = path.strip_prefix("/v1/workspaces/")?;
+    let workspace_id = suffix.strip_suffix("/execute")?;
+    if workspace_id.trim().is_empty() || workspace_id.contains('/') {
+        return None;
+    }
+    Some(workspace_id.to_string())
+}
+
+fn request_prefers_async(request: &HttpRequest) -> bool {
+    let header_prefers_async = request
+        .headers
+        .get("prefer")
+        .is_some_and(|value| value.split(',').any(|part| part.trim() == "respond-async"));
+    let body_prefers_async = serde_json::from_slice::<Value>(&request.body)
+        .ok()
+        .and_then(|value| value.get("mode").cloned())
+        .and_then(|value| value.as_str().map(str::to_string))
+        .is_some_and(|mode| mode == "async");
+    header_prefers_async || body_prefers_async
+}
+
+fn execution_links(workspace_id: &str, execution_id: &str, include_subscription: bool) -> Value {
+    let status = format!("/v1/workspaces/{workspace_id}/executions/{execution_id}");
+    let trace = format!("/v1/workspaces/{workspace_id}/traces/{execution_id}");
+    let mut links = serde_json::Map::new();
+    links.insert("self".to_string(), Value::String(status.clone()));
+    links.insert("status".to_string(), Value::String(status.clone()));
+    links.insert("trace".to_string(), Value::String(trace));
+    if include_subscription {
+        links.insert(
+            "subscription".to_string(),
+            Value::String(format!("{status}/events")),
+        );
+    }
+    Value::Object(links)
 }
 
 fn handle_register_workflow<W: Write, E: LocalExecutor + Clone>(
@@ -2990,6 +3159,89 @@ mod tests {
         assert_eq!(resp["status"], "completed");
         assert!(resp["trace"].is_object(), "trace must be an object");
         assert_eq!(resp["request_id"], "test-req-001");
+    }
+
+    #[test]
+    fn workspace_execute_endpoint_returns_sync_execution_envelope() {
+        let body = make_runtime_request_body("test.api.do-something");
+        let state = test_state_with("test.api.do-something", "1.0.0");
+        let req = make_http_request("POST", "/v1/workspaces/ws-test/execute", body);
+
+        let mut out = Vec::new();
+        handle_execute_workspace(&mut out, &req, &state, true, "ws-test")
+            .expect("execute must write a response");
+
+        let status = response_status(&out);
+        let resp = parse_response_body(&out);
+
+        assert_eq!(status, 200);
+        assert_eq!(resp["api_version"], "v1");
+        assert_eq!(resp["execution_id"], "exec_test-req-001");
+        assert_eq!(resp["status"], "succeeded");
+        assert_eq!(resp["output"]["result"], "ok");
+        assert_eq!(
+            resp["links"]["self"],
+            "/v1/workspaces/ws-test/executions/exec_test-req-001"
+        );
+        assert_eq!(
+            resp["links"]["trace"],
+            "/v1/workspaces/ws-test/traces/exec_test-req-001"
+        );
+    }
+
+    #[test]
+    fn workspace_execute_endpoint_returns_async_accepted_envelope_for_prefer_header() {
+        let body = make_runtime_request_body("test.api.do-something");
+        let state = test_state_with("test.api.do-something", "1.0.0");
+        let mut req = make_http_request("POST", "/v1/workspaces/ws-test/execute", body);
+        req.headers
+            .insert("prefer".to_string(), "respond-async".to_string());
+
+        let mut out = Vec::new();
+        handle_execute_workspace(&mut out, &req, &state, true, "ws-test")
+            .expect("execute must write a response");
+
+        let status = response_status(&out);
+        let resp = parse_response_body(&out);
+
+        assert_eq!(status, 202);
+        assert_eq!(resp["api_version"], "v1");
+        assert_eq!(resp["execution_id"], "exec_test-req-001");
+        assert_eq!(resp["status"], "accepted");
+        assert_eq!(
+            resp["links"]["status"],
+            "/v1/workspaces/ws-test/executions/exec_test-req-001"
+        );
+        assert_eq!(
+            resp["links"]["trace"],
+            "/v1/workspaces/ws-test/traces/exec_test-req-001"
+        );
+        assert_eq!(
+            resp["links"]["subscription"],
+            "/v1/workspaces/ws-test/executions/exec_test-req-001/events"
+        );
+    }
+
+    #[test]
+    fn workspace_execute_endpoint_returns_async_accepted_envelope_for_body_mode() {
+        let mut body: Value =
+            serde_json::from_slice(&make_runtime_request_body("test.api.do-something"))
+                .expect("request body must be json");
+        body["mode"] = Value::String("async".to_string());
+        let state = test_state_with("test.api.do-something", "1.0.0");
+        let req = make_http_request(
+            "POST",
+            "/v1/workspaces/ws-test/execute",
+            serde_json::to_vec(&body).expect("request body must serialize"),
+        );
+        assert!(request_prefers_async(&req));
+
+        let mut out = Vec::new();
+        handle_execute_workspace(&mut out, &req, &state, true, "ws-test")
+            .expect("execute must write a response");
+
+        assert_eq!(response_status(&out), 202);
+        assert_eq!(parse_response_body(&out)["status"], "accepted");
     }
 
     // ------------------------------------------------------------------
