@@ -90,7 +90,7 @@ enum Command {
         workspace_id: String,
     },
     Serve {
-        port: u16,
+        bind_address: String,
         allow_unauthenticated: bool,
     },
 }
@@ -134,10 +134,10 @@ fn main() -> ExitCode {
             }
         }
         Ok(Command::Serve {
-            port,
+            bind_address,
             allow_unauthenticated,
         }) => {
-            if let Err(error) = run_serve(port, allow_unauthenticated) {
+            if let Err(error) = run_serve(bind_address, allow_unauthenticated) {
                 eprintln!("{error}");
                 ExitCode::FAILURE
             } else {
@@ -643,11 +643,11 @@ fn parse_browser_adapter_command(args: &[String]) -> Result<Command, String> {
 }
 
 fn help_serve() -> String {
-    "traverse-cli serve [--port <port>] [--allow-unauthenticated]
+    "traverse-cli serve [--bind <address>] [--port <port>] [--allow-unauthenticated]
 
   Purpose:
-    Start a long-running HTTP/JSON API server on 0.0.0.0:<port>. Exposes three
-    endpoints under /v1/:
+    Start a long-running HTTP/JSON API server on 127.0.0.1:8787 by default.
+    Writes .traverse/server.json for local app discovery and exposes:
       GET  /healthz                    Returns the spec 033 health envelope.
       GET  /v1/capabilities            Returns JSON array of registered capabilities.
       POST /v1/capabilities/execute    Accepts RuntimeRequest JSON, returns trace + result.
@@ -657,7 +657,8 @@ fn help_serve() -> String {
     --allow-unauthenticated is set.
 
   Optional flags:
-    --port <N>                 Port to listen on (default: 8080).
+    --bind <address>           Address and port to listen on (default: 127.0.0.1:8787).
+    --port <N>                 Compatibility shortcut for --bind 127.0.0.1:<N>.
     --allow-unauthenticated    Accept unauthenticated requests from non-loopback
                                addresses. Prints a warning to stderr. Unsafe in
                                production.
@@ -665,36 +666,47 @@ fn help_serve() -> String {
 
   Example:
     traverse-cli serve
-    traverse-cli serve --port 9090
+    traverse-cli serve --bind 127.0.0.1:9090
     traverse-cli serve --port 9090 --allow-unauthenticated"
         .to_string()
 }
 
 fn parse_serve_command(args: &[String]) -> Result<Command, String> {
     let allow_unauthenticated = args.iter().any(|a| a == "--allow-unauthenticated");
-
+    let bind_flag_pos = args.iter().position(|a| a == "--bind");
     let port_flag_pos = args.iter().position(|a| a == "--port");
-    let port: u16 = if let Some(pos) = port_flag_pos {
+
+    if bind_flag_pos.is_some() && port_flag_pos.is_some() {
+        return Err("--bind and --port cannot be used together".to_string());
+    }
+
+    let bind_address = if let Some(pos) = bind_flag_pos {
         args.get(pos + 1)
+            .ok_or_else(|| "--bind requires a value".to_string())?
+            .clone()
+    } else if let Some(pos) = port_flag_pos {
+        let port = args
+            .get(pos + 1)
             .ok_or_else(|| "--port requires a value".to_string())?
             .parse::<u16>()
-            .map_err(|_| "--port value must be a valid port number (0-65535)".to_string())?
+            .map_err(|_| "--port value must be a valid port number (0-65535)".to_string())?;
+        format!("127.0.0.1:{port}")
     } else {
-        8080
+        "127.0.0.1:8787".to_string()
     };
 
     Ok(Command::Serve {
-        port,
+        bind_address,
         allow_unauthenticated,
     })
 }
 
-fn run_serve(port: u16, allow_unauthenticated: bool) -> Result<(), String> {
+fn run_serve(bind_address: String, allow_unauthenticated: bool) -> Result<(), String> {
     let registered =
         load_registered_bundle(&canonical_expedition_bundle_path()).map_err(|e| e.to_string())?;
 
     let config = http_api::ApiServerConfig {
-        port,
+        bind_address,
         allow_unauthenticated,
         capability_registry: registered.capability_registry,
         workflow_registry: registered.workflow_registry,
@@ -1163,7 +1175,7 @@ fn workflow_inspect(
 fn build_in_process_api() -> Result<http_api::InProcessApi<ExpeditionExampleExecutor>, CliError> {
     let registered = load_registered_bundle(&canonical_expedition_bundle_path())?;
     Ok(http_api::InProcessApi::new(http_api::ApiServerConfig {
-        port: 0,
+        bind_address: "127.0.0.1:0".to_string(),
         allow_unauthenticated: true,
         capability_registry: registered.capability_registry,
         workflow_registry: registered.workflow_registry,
@@ -1515,7 +1527,7 @@ fn render_trace_summary(trace_path: &Path, trace: &RuntimeTrace) -> String {
 }
 
 fn usage() -> String {
-    "usage: traverse-cli <bundle|agent|event|trace|workflow|expedition|federation> <inspect|register|execute|peers|sync|status> <artifact-path> [request-path] [--trace-out <trace-path>] | traverse-cli browser-adapter serve [--bind <address>] | traverse-cli serve [--port <N>] [--allow-unauthenticated]".to_string()
+    "usage: traverse-cli <bundle|agent|event|trace|workflow|expedition|federation> <inspect|register|execute|peers|sync|status> <artifact-path> [request-path] [--trace-out <trace-path>] | traverse-cli browser-adapter serve [--bind <address>] | traverse-cli serve [--bind <address>] [--port <N>] [--allow-unauthenticated]".to_string()
 }
 
 fn write_trace_artifact(path: &Path, trace: &RuntimeTrace) -> Result<(), CliError> {
@@ -2271,7 +2283,7 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::{
-        execute_agent, execute_expedition, inspect_agent, inspect_bundle, inspect_event,
+        Command, execute_agent, execute_expedition, inspect_agent, inspect_bundle, inspect_event,
         inspect_trace, inspect_workflow, parse_command, register_bundle,
     };
     use crate::agent_packages::fnv1a64;
@@ -2349,6 +2361,82 @@ mod tests {
         assert!(parse_command(&event).is_ok());
         assert!(parse_command(&trace).is_ok());
         assert!(parse_command(&workflow).is_ok());
+    }
+
+    #[test]
+    fn parse_serve_defaults_to_loopback_8787() {
+        let args = vec!["traverse-cli".to_string(), "serve".to_string()];
+
+        let command = parse_command(&args).expect("serve command should parse");
+
+        match command {
+            Command::Serve {
+                bind_address,
+                allow_unauthenticated,
+            } => {
+                assert_eq!(bind_address, "127.0.0.1:8787");
+                assert!(!allow_unauthenticated);
+            }
+            other => assert!(matches!(other, Command::Serve { .. })),
+        }
+    }
+
+    #[test]
+    fn parse_serve_accepts_bind_override() {
+        let args = vec![
+            "traverse-cli".to_string(),
+            "serve".to_string(),
+            "--bind".to_string(),
+            "127.0.0.1:9090".to_string(),
+        ];
+
+        let command = parse_command(&args).expect("serve command should parse");
+
+        match command {
+            Command::Serve { bind_address, .. } => {
+                assert_eq!(bind_address, "127.0.0.1:9090");
+            }
+            other => assert!(matches!(other, Command::Serve { .. })),
+        }
+    }
+
+    #[test]
+    fn parse_serve_keeps_port_as_loopback_shortcut() {
+        let args = vec![
+            "traverse-cli".to_string(),
+            "serve".to_string(),
+            "--port".to_string(),
+            "9090".to_string(),
+            "--allow-unauthenticated".to_string(),
+        ];
+
+        let command = parse_command(&args).expect("serve command should parse");
+
+        match command {
+            Command::Serve {
+                bind_address,
+                allow_unauthenticated,
+            } => {
+                assert_eq!(bind_address, "127.0.0.1:9090");
+                assert!(allow_unauthenticated);
+            }
+            other => assert!(matches!(other, Command::Serve { .. })),
+        }
+    }
+
+    #[test]
+    fn parse_serve_rejects_bind_and_port_together() {
+        let args = vec![
+            "traverse-cli".to_string(),
+            "serve".to_string(),
+            "--bind".to_string(),
+            "127.0.0.1:9090".to_string(),
+            "--port".to_string(),
+            "9091".to_string(),
+        ];
+
+        let error = parse_command(&args).expect_err("bind plus port should be rejected");
+        assert!(error.contains("--bind and --port cannot be used together"));
     }
 
     #[test]

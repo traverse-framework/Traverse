@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use traverse_contracts::{CapabilityContract, parse_contract};
 use traverse_registry::{
     ArtifactDigests, BinaryFormat, BinaryReference, CapabilityArtifactRecord,
@@ -23,6 +24,8 @@ const SYSTEM_WORKSPACE_ID: &str = "system";
 const SYSTEM_ADMIN_SUBJECT: &str = "system_admin";
 const PERSISTED_REGISTRY_SCHEMA_VERSION: &str = "1.0.0";
 const WORKSPACE_METADATA_SCHEMA_VERSION: &str = "1.0.0";
+const DEFAULT_WORKSPACE_ID: &str = "local-default";
+const SERVER_DISCOVERY_SCHEMA_VERSION: &str = "1.0.0";
 
 /// Errors that can occur while serving the HTTP/JSON API.
 #[derive(Debug)]
@@ -44,7 +47,7 @@ impl std::fmt::Display for ServeError {
 
 /// Configuration for the HTTP/JSON API server.
 pub struct ApiServerConfig<E> {
-    pub port: u16,
+    pub bind_address: String,
     pub allow_unauthenticated: bool,
     pub capability_registry: CapabilityRegistry,
     pub workflow_registry: WorkflowRegistry,
@@ -90,6 +93,19 @@ struct PersistedWorkflowRegistrationV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct ServerDiscoveryV1 {
+    schema_version: String,
+    base_url: String,
+    health_url: String,
+    workspace_default: String,
+    pid: u32,
+    started_at: String,
+    auth_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_dev_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct WorkspaceMetadataV1 {
     schema_version: String,
     workspace_id: String,
@@ -128,13 +144,22 @@ pub fn serve_http_api<E>(config: ApiServerConfig<E>) -> Result<(), ServeError>
 where
     E: LocalExecutor + Clone,
 {
-    let bind_addr = format!("0.0.0.0:{}", config.port);
-    let listener = TcpListener::bind(&bind_addr)
-        .map_err(|e| ServeError::BindFailed(format!("{bind_addr}: {e}")))?;
+    let listener = TcpListener::bind(&config.bind_address)
+        .map_err(|e| ServeError::BindFailed(format!("{}: {e}", config.bind_address)))?;
 
     let local_addr = listener
         .local_addr()
         .map_err(|e| ServeError::BindFailed(format!("could not read local address: {e}")))?;
+    let auth_mode = if local_addr.ip().is_loopback() {
+        "dev-loopback"
+    } else {
+        "bearer-required"
+    };
+    let local_dev_token = if local_addr.ip().is_loopback() {
+        Some(mint_local_dev_token(&local_addr.to_string()))
+    } else {
+        None
+    };
 
     if config.allow_unauthenticated {
         eprintln!(
@@ -147,6 +172,14 @@ where
         "traverse-cli serve: HTTP/JSON API listening on http://{local_addr} (spec 033-http-json-api)"
     );
     let _ = std::io::stderr().flush();
+
+    write_server_discovery(
+        Path::new("."),
+        &format!("http://{local_addr}"),
+        auth_mode,
+        local_dev_token.as_deref(),
+    )
+    .map_err(ServeError::BindFailed)?;
 
     let mut workspaces = HashMap::new();
     workspaces.insert(
@@ -181,6 +214,69 @@ where
         }
     }
 
+    Ok(())
+}
+
+fn mint_local_dev_token(local_addr: &str) -> String {
+    let now = unix_timestamp();
+    format!(
+        "trv_local_{}_{}",
+        std::process::id(),
+        crate::agent_packages::fnv1a64(format!("{local_addr}:{now}").as_bytes())
+    )
+}
+
+fn unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn write_server_discovery(
+    repo_root: &Path,
+    base_url: &str,
+    auth_mode: &str,
+    local_dev_token: Option<&str>,
+) -> Result<PathBuf, String> {
+    let traverse_dir = repo_root.join(".traverse");
+    std::fs::create_dir_all(&traverse_dir)
+        .map_err(|e| format!("failed to create .traverse directory: {e}"))?;
+    let discovery_path = traverse_dir.join("server.json");
+    let discovery = ServerDiscoveryV1 {
+        schema_version: SERVER_DISCOVERY_SCHEMA_VERSION.to_string(),
+        base_url: base_url.to_string(),
+        health_url: format!("{base_url}/healthz"),
+        workspace_default: DEFAULT_WORKSPACE_ID.to_string(),
+        pid: std::process::id(),
+        started_at: generated_registered_at().map_err(|e| e.message)?,
+        auth_mode: auth_mode.to_string(),
+        local_dev_token: local_dev_token.map(str::to_string),
+    };
+    let body = serde_json::to_vec_pretty(&discovery)
+        .map_err(|e| format!("failed to serialize server discovery file: {e}"))?;
+    std::fs::write(&discovery_path, body)
+        .map_err(|e| format!("failed to write {}: {e}", discovery_path.display()))?;
+    if local_dev_token.is_some() {
+        set_owner_read_write(&discovery_path)?;
+    }
+    Ok(discovery_path)
+}
+
+#[cfg(unix)]
+fn set_owner_read_write(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
+        format!(
+            "failed to set owner-only permissions on {}: {e}",
+            path.display()
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn set_owner_read_write(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
@@ -2627,6 +2723,56 @@ mod tests {
         assert_eq!(body["api_version"], "v1");
         assert_eq!(body["workspace_default"], "local-default");
         assert_eq!(body["auth_mode"], "bearer-required");
+    }
+
+    #[test]
+    fn server_discovery_file_contains_health_url_and_local_token_metadata() {
+        let repo_root = test_registry_root();
+        let discovery_path = write_server_discovery(
+            &repo_root,
+            "http://127.0.0.1:8787",
+            "dev-loopback",
+            Some("local-token"),
+        )
+        .expect("discovery file must be written");
+
+        assert_eq!(discovery_path, repo_root.join(".traverse/server.json"));
+        let body = std::fs::read_to_string(&discovery_path).expect("discovery file must be read");
+        let json: Value = serde_json::from_str(&body).expect("discovery must be valid json");
+        assert_eq!(json["schema_version"], SERVER_DISCOVERY_SCHEMA_VERSION);
+        assert_eq!(json["base_url"], "http://127.0.0.1:8787");
+        assert_eq!(json["health_url"], "http://127.0.0.1:8787/healthz");
+        assert_eq!(json["workspace_default"], DEFAULT_WORKSPACE_ID);
+        assert_eq!(json["auth_mode"], "dev-loopback");
+        assert_eq!(json["local_dev_token"], "local-token");
+        assert!(json["pid"].as_u64().is_some());
+        assert!(
+            json["started_at"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn token_bearing_discovery_file_is_owner_read_write_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo_root = test_registry_root();
+        let discovery_path = write_server_discovery(
+            &repo_root,
+            "http://127.0.0.1:8787",
+            "dev-loopback",
+            Some("local-token"),
+        )
+        .expect("discovery file must be written");
+
+        let mode = std::fs::metadata(&discovery_path)
+            .expect("metadata must be readable")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     // ------------------------------------------------------------------
