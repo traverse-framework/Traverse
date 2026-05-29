@@ -66,6 +66,15 @@ struct WorkspaceState<E> {
     runtime: traverse_runtime::Runtime<E>,
     persisted: PersistedWorkspaceRegistryV1,
     loaded_from_disk: bool,
+    executions: HashMap<String, ExecutionStatusRecord>,
+}
+
+#[derive(Debug, Clone)]
+struct ExecutionStatusRecord {
+    execution_id: String,
+    status: String,
+    created_at: String,
+    updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,6 +202,7 @@ where
                 workflows: Vec::new(),
             },
             loaded_from_disk: true,
+            executions: HashMap::new(),
         },
     );
 
@@ -304,6 +314,7 @@ where
                     workflows: Vec::new(),
                 },
                 loaded_from_disk: false,
+                executions: HashMap::new(),
             },
         );
 
@@ -395,6 +406,7 @@ where
                     workflows: Vec::new(),
                 },
                 loaded_from_disk: false,
+                executions: HashMap::new(),
             });
 
         if !entry.loaded_from_disk {
@@ -1465,6 +1477,7 @@ fn apply_registration<E: LocalExecutor + Clone>(
                 workflows: Vec::new(),
             },
             loaded_from_disk: false,
+            executions: HashMap::new(),
         });
 
     ensure_workspace_loaded(state, workspace_id, ws)?;
@@ -1602,6 +1615,24 @@ fn handle_connection<E: LocalExecutor + Clone>(
         }
         ("GET", "/v1/workflows") => {
             handle_list_workflows(&mut stream, &request, state, peer_ip.is_loopback())
+        }
+        ("GET", path) if workspace_execution_status_path(path).is_some() => {
+            let Some((workspace_id, execution_id)) = workspace_execution_status_path(path) else {
+                return write_json(
+                    &mut stream,
+                    404,
+                    "Not Found",
+                    &error_envelope("not_found", "route not found"),
+                );
+            };
+            handle_execution_status(
+                &mut stream,
+                &request,
+                state,
+                peer_ip.is_loopback(),
+                &workspace_id,
+                &execution_id,
+            )
         }
         ("GET", path) if path.starts_with("/v1/workflows/") => handle_get_workflow(
             &mut stream,
@@ -1938,6 +1969,7 @@ fn handle_execute_workspace<W: Write, E: LocalExecutor + Clone>(
 
     if request_prefers_async(request) {
         let execution_id = format!("exec_{}", runtime_request.request_id);
+        record_execution_status(state, workspace_id, &execution_id, "accepted")?;
         return write_json(
             w,
             202,
@@ -1958,6 +1990,7 @@ fn handle_execute_workspace<W: Write, E: LocalExecutor + Clone>(
     } else {
         "succeeded"
     };
+    record_execution_status(state, workspace_id, &outcome.result.execution_id, status)?;
 
     write_json(
         w,
@@ -2023,6 +2056,15 @@ fn workspace_execute_path(path: &str) -> Option<String> {
     Some(workspace_id.to_string())
 }
 
+fn workspace_execution_status_path(path: &str) -> Option<(String, String)> {
+    let suffix = path.strip_prefix("/v1/workspaces/")?;
+    let (workspace_id, tail) = suffix.split_once("/executions/")?;
+    if workspace_id.trim().is_empty() || tail.trim().is_empty() || tail.contains('/') {
+        return None;
+    }
+    Some((workspace_id.to_string(), tail.to_string()))
+}
+
 fn request_prefers_async(request: &HttpRequest) -> bool {
     let header_prefers_async = request
         .headers
@@ -2050,6 +2092,87 @@ fn execution_links(workspace_id: &str, execution_id: &str, include_subscription:
         );
     }
     Value::Object(links)
+}
+
+fn record_execution_status<E: LocalExecutor + Clone>(
+    state: &ApiState<E>,
+    workspace_id: &str,
+    execution_id: &str,
+    status: &str,
+) -> Result<(), String> {
+    let now = generated_registered_at().map_err(|e| e.message)?;
+    state.with_workspace_mut(workspace_id, |ws| {
+        ws.executions.insert(
+            execution_id.to_string(),
+            ExecutionStatusRecord {
+                execution_id: execution_id.to_string(),
+                status: status.to_string(),
+                created_at: now.clone(),
+                updated_at: now,
+            },
+        );
+        Ok(())
+    })
+}
+
+fn handle_execution_status<W: Write, E: LocalExecutor + Clone>(
+    w: &mut W,
+    request: &HttpRequest,
+    state: &ApiState<E>,
+    loopback: bool,
+    workspace_id: &str,
+    execution_id: &str,
+) -> Result<(), String> {
+    let identity =
+        match subject_from_request(&request.headers, state.allow_unauthenticated, loopback) {
+            Ok(identity) => identity,
+            Err(err) => {
+                return write_json(
+                    w,
+                    err.status,
+                    err.reason,
+                    &error_envelope(err.code, &err.message),
+                );
+            }
+        };
+
+    let _ = match ensure_workspace_access(&state.registry_root, workspace_id, &identity) {
+        Ok(metadata) => metadata,
+        Err(err) => {
+            return write_json(
+                w,
+                err.status,
+                err.reason,
+                &error_envelope(err.code, &err.message),
+            );
+        }
+    };
+
+    let record = state.with_workspace_mut(workspace_id, |ws| {
+        Ok(ws.executions.get(execution_id).cloned())
+    })?;
+    let Some(record) = record else {
+        return write_json(
+            w,
+            404,
+            "Not Found",
+            &error_envelope("not_found", "execution was not found"),
+        );
+    };
+
+    write_json(
+        w,
+        200,
+        "OK",
+        &json!({
+            "api_version": "v1",
+            "execution_id": record.execution_id,
+            "status": record.status,
+            "created_at": record.created_at,
+            "updated_at": record.updated_at,
+            "links": execution_links(workspace_id, execution_id, true),
+        }),
+    )
 }
 
 fn handle_register_workflow<W: Write, E: LocalExecutor + Clone>(
@@ -2706,6 +2829,7 @@ mod tests {
                     workflows: Vec::new(),
                 },
                 loaded_from_disk: true,
+                executions: HashMap::new(),
             },
         );
 
@@ -2735,6 +2859,7 @@ mod tests {
                     workflows: Vec::new(),
                 },
                 loaded_from_disk: true,
+                executions: HashMap::new(),
             },
         );
 
@@ -3242,6 +3367,122 @@ mod tests {
 
         assert_eq!(response_status(&out), 202);
         assert_eq!(parse_response_body(&out)["status"], "accepted");
+    }
+
+    #[test]
+    fn execution_status_endpoint_returns_running_status() {
+        let state = empty_state();
+        state
+            .with_workspace_mut("ws-test", |ws| {
+                ws.executions.insert(
+                    "exec_running".to_string(),
+                    ExecutionStatusRecord {
+                        execution_id: "exec_running".to_string(),
+                        status: "running".to_string(),
+                        created_at: "2026-01-01T00:00:00Z".to_string(),
+                        updated_at: "2026-01-01T00:00:01Z".to_string(),
+                    },
+                );
+                Ok(())
+            })
+            .expect("execution status seed must succeed");
+        let req = make_http_request(
+            "GET",
+            "/v1/workspaces/ws-test/executions/exec_running",
+            Vec::new(),
+        );
+
+        let mut out = Vec::new();
+        handle_execution_status(&mut out, &req, &state, true, "ws-test", "exec_running")
+            .expect("status lookup must write a response");
+
+        assert_eq!(response_status(&out), 200);
+        let resp = parse_response_body(&out);
+        assert_eq!(resp["api_version"], "v1");
+        assert_eq!(resp["execution_id"], "exec_running");
+        assert_eq!(resp["status"], "running");
+        assert_eq!(resp["created_at"], "2026-01-01T00:00:00Z");
+        assert_eq!(resp["updated_at"], "2026-01-01T00:00:01Z");
+        assert_eq!(
+            resp["links"]["self"],
+            "/v1/workspaces/ws-test/executions/exec_running"
+        );
+        assert_eq!(
+            resp["links"]["trace"],
+            "/v1/workspaces/ws-test/traces/exec_running"
+        );
+        assert_eq!(
+            resp["links"]["subscription"],
+            "/v1/workspaces/ws-test/executions/exec_running/events"
+        );
+    }
+
+    #[test]
+    fn execution_status_endpoint_returns_succeeded_status_after_sync_execute() {
+        let body = make_runtime_request_body("test.api.do-something");
+        let state = test_state_with("test.api.do-something", "1.0.0");
+        let execute_req = make_http_request("POST", "/v1/workspaces/ws-test/execute", body);
+        let mut execute_out = Vec::new();
+        handle_execute_workspace(&mut execute_out, &execute_req, &state, true, "ws-test")
+            .expect("execute must write a response");
+
+        let req = make_http_request(
+            "GET",
+            "/v1/workspaces/ws-test/executions/exec_test-req-001",
+            Vec::new(),
+        );
+        let mut out = Vec::new();
+        handle_execution_status(&mut out, &req, &state, true, "ws-test", "exec_test-req-001")
+            .expect("status lookup must write a response");
+
+        assert_eq!(response_status(&out), 200);
+        let resp = parse_response_body(&out);
+        assert_eq!(resp["execution_id"], "exec_test-req-001");
+        assert_eq!(resp["status"], "succeeded");
+        assert!(resp["created_at"].as_str().is_some_and(|v| !v.is_empty()));
+        assert!(resp["updated_at"].as_str().is_some_and(|v| !v.is_empty()));
+    }
+
+    #[test]
+    fn execution_status_endpoint_returns_failed_status_after_runtime_error() {
+        let body = make_runtime_request_body("unknown.capability.does-not-exist");
+        let state = empty_state();
+        let execute_req = make_http_request("POST", "/v1/workspaces/ws-test/execute", body);
+        let mut execute_out = Vec::new();
+        handle_execute_workspace(&mut execute_out, &execute_req, &state, true, "ws-test")
+            .expect("execute must write a response");
+
+        let req = make_http_request(
+            "GET",
+            "/v1/workspaces/ws-test/executions/exec_test-req-001",
+            Vec::new(),
+        );
+        let mut out = Vec::new();
+        handle_execution_status(&mut out, &req, &state, true, "ws-test", "exec_test-req-001")
+            .expect("status lookup must write a response");
+
+        assert_eq!(response_status(&out), 200);
+        let resp = parse_response_body(&out);
+        assert_eq!(resp["execution_id"], "exec_test-req-001");
+        assert_eq!(resp["status"], "failed");
+    }
+
+    #[test]
+    fn execution_status_endpoint_returns_not_found_for_missing_execution() {
+        let state = empty_state();
+        let req = make_http_request(
+            "GET",
+            "/v1/workspaces/ws-test/executions/exec_missing",
+            Vec::new(),
+        );
+
+        let mut out = Vec::new();
+        handle_execution_status(&mut out, &req, &state, true, "ws-test", "exec_missing")
+            .expect("status lookup must write a response");
+
+        assert_eq!(response_status(&out), 404);
+        let resp = parse_response_body(&out);
+        assert_eq!(resp["error"]["code"], "not_found");
     }
 
     // ------------------------------------------------------------------
