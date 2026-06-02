@@ -251,3 +251,11 @@ Traverse is spec-driven. Code must align with an approved, immutable spec or it 
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+## Related Work
+
+- [UMA-code-examples](https://github.com/enricopiovesan/UMA-code-examples)
+- [Universal Microservices Architecture — Book](https://www.amazon.com/dp/B0GTTTTQH4)
+- [Contract-Driven AI Development (C-DAD) — White Paper](https://drive.google.com/file/d/1HC_ZWJl9aYaMeN78qiL3ZYBVY7mAGl3f/view)
+- [Speaking](https://enricopiovesan.github.io/enricopiovesan/)
+- [github.com/enricopiovesan](https://github.com/enricopiovesan)
