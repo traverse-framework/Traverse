@@ -714,6 +714,7 @@ fn run_serve(bind_address: String, allow_unauthenticated: bool) -> Result<(), St
             .map_err(|e| format!("failed to resolve current directory: {e}"))?
             .join(".traverse/registry"),
         executor: ExpeditionExampleExecutor,
+        idempotency_retention_seconds: None,
     };
 
     http_api::serve_http_api(config).map_err(|e| e.to_string())
@@ -1183,6 +1184,7 @@ fn build_in_process_api() -> Result<http_api::InProcessApi<ExpeditionExampleExec
             .map_err(|e| CliError::IoError(format!("failed to resolve current directory: {e}")))?
             .join(".traverse/registry"),
         executor: ExpeditionExampleExecutor,
+        idempotency_retention_seconds: None,
     }))
 }
 

@@ -26,6 +26,8 @@ const PERSISTED_REGISTRY_SCHEMA_VERSION: &str = "1.0.0";
 const WORKSPACE_METADATA_SCHEMA_VERSION: &str = "1.0.0";
 const DEFAULT_WORKSPACE_ID: &str = "local-default";
 const SERVER_DISCOVERY_SCHEMA_VERSION: &str = "1.0.0";
+const DEFAULT_IDEMPOTENCY_RETENTION_SECONDS: u64 = 24 * 60 * 60;
+const MIN_IDEMPOTENCY_RETENTION_SECONDS: u64 = 60;
 
 /// Errors that can occur while serving the HTTP/JSON API.
 #[derive(Debug)]
@@ -53,6 +55,8 @@ pub struct ApiServerConfig<E> {
     pub workflow_registry: WorkflowRegistry,
     pub registry_root: PathBuf,
     pub executor: E,
+    /// Optional Idempotency-Key retention in seconds. Values below 60 seconds are floored to 60.
+    pub idempotency_retention_seconds: Option<u64>,
 }
 
 struct ApiState<E> {
@@ -60,6 +64,8 @@ struct ApiState<E> {
     registry_root: PathBuf,
     executor: E,
     workspaces: RefCell<HashMap<String, WorkspaceState<E>>>,
+    idempotency_records: RefCell<HashMap<String, IdempotencyRecord>>,
+    idempotency_retention_seconds: u64,
 }
 
 struct WorkspaceState<E> {
@@ -76,6 +82,16 @@ struct ExecutionStatusRecord {
     status: String,
     created_at: String,
     updated_at: String,
+}
+
+#[derive(Debug, Clone)]
+struct IdempotencyRecord {
+    body_digest: String,
+    status: u16,
+    reason: String,
+    content_type: String,
+    body: Vec<u8>,
+    stored_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,6 +235,10 @@ where
         registry_root: config.registry_root,
         executor: config.executor,
         workspaces: RefCell::new(workspaces),
+        idempotency_records: RefCell::new(HashMap::new()),
+        idempotency_retention_seconds: configured_idempotency_retention(
+            config.idempotency_retention_seconds,
+        ),
     };
 
     for connection in listener.incoming() {
@@ -249,6 +269,12 @@ fn unix_timestamp() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
+}
+
+fn configured_idempotency_retention(value: Option<u64>) -> u64 {
+    value
+        .unwrap_or(DEFAULT_IDEMPOTENCY_RETENTION_SECONDS)
+        .max(MIN_IDEMPOTENCY_RETENTION_SECONDS)
 }
 
 fn write_server_discovery(
@@ -333,6 +359,10 @@ where
                 registry_root: config.registry_root,
                 executor: config.executor,
                 workspaces: RefCell::new(workspaces),
+                idempotency_records: RefCell::new(HashMap::new()),
+                idempotency_retention_seconds: configured_idempotency_retention(
+                    config.idempotency_retention_seconds,
+                ),
             },
         }
     }
@@ -1983,6 +2013,12 @@ fn handle_execute_workspace<W: Write, E: LocalExecutor + Clone>(
     loopback: bool,
     workspace_id: &str,
 ) -> Result<(), String> {
+    if let Some(replay) =
+        idempotency_replay_or_conflict(request, state, workspace_id, "workspace_execute")?
+    {
+        return write_recorded_response(w, &replay);
+    }
+
     let Ok(runtime_request) = parse_execute_runtime_request(w, request) else {
         return Ok(());
     };
@@ -2015,17 +2051,22 @@ fn handle_execute_workspace<W: Write, E: LocalExecutor + Clone>(
     if request_prefers_async(request) {
         let execution_id = format!("exec_{}", runtime_request.request_id);
         record_execution_status(state, workspace_id, &execution_id, "accepted")?;
-        return write_json(
-            w,
+        let body = json!({
+            "api_version": "v1",
+            "execution_id": execution_id,
+            "status": "accepted",
+            "links": execution_links(workspace_id, &execution_id, true),
+        });
+        record_idempotent_success(
+            request,
+            state,
+            workspace_id,
+            "workspace_execute",
             202,
             "Accepted",
-            &json!({
-                "api_version": "v1",
-                "execution_id": execution_id,
-                "status": "accepted",
-                "links": execution_links(workspace_id, &execution_id, true),
-            }),
-        );
+            &body,
+        )?;
+        return write_json(w, 202, "Accepted", &body);
     }
 
     let outcome: RuntimeExecutionOutcome =
@@ -2043,22 +2084,27 @@ fn handle_execute_workspace<W: Write, E: LocalExecutor + Clone>(
         outcome.trace.clone(),
     )?;
 
-    write_json(
-        w,
+    let body = json!({
+        "api_version": "v1",
+        "execution_id": outcome.result.execution_id,
+        "status": status,
+        "output": outcome.result.output,
+        "error": outcome.result.error.as_ref().map(|e| json!({
+            "code": format!("{:?}", e.code).to_lowercase(),
+            "message": e.message,
+        })),
+        "links": execution_links(workspace_id, &outcome.result.execution_id, false),
+    });
+    record_idempotent_success(
+        request,
+        state,
+        workspace_id,
+        "workspace_execute",
         200,
         "OK",
-        &json!({
-            "api_version": "v1",
-            "execution_id": outcome.result.execution_id,
-            "status": status,
-            "output": outcome.result.output,
-            "error": outcome.result.error.as_ref().map(|e| json!({
-                "code": format!("{:?}", e.code).to_lowercase(),
-                "message": e.message,
-            })),
-            "links": execution_links(workspace_id, &outcome.result.execution_id, false),
-        }),
-    )
+        &body,
+    )?;
+    write_json(w, 200, "OK", &body)
 }
 
 fn parse_execute_runtime_request<W: Write>(
@@ -2201,6 +2247,139 @@ fn record_execution_trace<E: LocalExecutor + Clone>(
         ws.traces.insert(execution_id.to_string(), trace);
         Ok(())
     })
+}
+
+fn idempotency_replay_or_conflict<E: LocalExecutor + Clone>(
+    request: &HttpRequest,
+    state: &ApiState<E>,
+    workspace_id: &str,
+    operation: &str,
+) -> Result<Option<IdempotencyRecord>, String> {
+    let Some(key) = idempotency_key(request) else {
+        return Ok(None);
+    };
+
+    prune_idempotency_records(state);
+    let cache_key = idempotency_cache_key(request, workspace_id, operation, key);
+    let body_digest = idempotency_body_digest(request);
+    let Some(record) = state.idempotency_records.borrow().get(&cache_key).cloned() else {
+        return Ok(None);
+    };
+
+    if record.body_digest == body_digest {
+        return Ok(Some(record));
+    }
+
+    let body = error_envelope(
+        "idempotency_key_conflict",
+        "Idempotency-Key was reused with a different request body",
+    );
+    let bytes = problem_response_bytes(409, "Conflict", &body)?;
+    Ok(Some(IdempotencyRecord {
+        body_digest,
+        status: 409,
+        reason: "Conflict".to_string(),
+        content_type: "application/problem+json".to_string(),
+        body: bytes,
+        stored_at: unix_timestamp(),
+    }))
+}
+
+fn record_idempotent_success<E: LocalExecutor + Clone>(
+    request: &HttpRequest,
+    state: &ApiState<E>,
+    workspace_id: &str,
+    operation: &str,
+    status: u16,
+    reason: &str,
+    body: &Value,
+) -> Result<(), String> {
+    let Some(key) = idempotency_key(request) else {
+        return Ok(());
+    };
+
+    prune_idempotency_records(state);
+    let cache_key = idempotency_cache_key(request, workspace_id, operation, key);
+    let bytes =
+        serde_json::to_vec(body).map_err(|e| format!("failed to serialize response: {e}"))?;
+    state.idempotency_records.borrow_mut().insert(
+        cache_key,
+        IdempotencyRecord {
+            body_digest: idempotency_body_digest(request),
+            status,
+            reason: reason.to_string(),
+            content_type: "application/json".to_string(),
+            body: bytes,
+            stored_at: unix_timestamp(),
+        },
+    );
+    Ok(())
+}
+
+fn write_recorded_response<W: Write>(w: &mut W, record: &IdempotencyRecord) -> Result<(), String> {
+    write_raw(
+        w,
+        record.status,
+        &record.reason,
+        &record.content_type,
+        &record.body,
+    )
+}
+
+fn idempotency_key(request: &HttpRequest) -> Option<&str> {
+    request
+        .headers
+        .get("idempotency-key")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn idempotency_cache_key(
+    request: &HttpRequest,
+    workspace_id: &str,
+    operation: &str,
+    key: &str,
+) -> String {
+    format!(
+        "{operation}|{workspace_id}|{}|{}|{key}",
+        idempotency_subject(request),
+        request.path
+    )
+}
+
+fn idempotency_subject(request: &HttpRequest) -> &str {
+    request
+        .headers
+        .get("authorization")
+        .map_or("local", String::as_str)
+}
+
+fn idempotency_body_digest(request: &HttpRequest) -> String {
+    crate::agent_packages::fnv1a64(&request.body)
+}
+
+fn prune_idempotency_records<E: LocalExecutor + Clone>(state: &ApiState<E>) {
+    let retention = state
+        .idempotency_retention_seconds
+        .max(MIN_IDEMPOTENCY_RETENTION_SECONDS);
+    let now = unix_timestamp();
+    state
+        .idempotency_records
+        .borrow_mut()
+        .retain(|_, record| now.saturating_sub(record.stored_at) <= retention);
+}
+
+fn problem_response_bytes(status: u16, reason: &str, body: &Value) -> Result<Vec<u8>, String> {
+    let mut body = body.clone();
+    if let Value::Object(root) = &mut body {
+        root.insert("title".to_string(), Value::String(reason.to_string()));
+        root.insert(
+            "status".to_string(),
+            Value::Number(serde_json::Number::from(status)),
+        );
+    }
+    serde_json::to_vec(&body).map_err(|e| format!("failed to serialize response: {e}"))
 }
 
 fn handle_execution_status<W: Write, E: LocalExecutor + Clone>(
@@ -3045,6 +3224,8 @@ mod tests {
             registry_root,
             executor,
             workspaces: RefCell::new(workspaces),
+            idempotency_records: RefCell::new(HashMap::new()),
+            idempotency_retention_seconds: DEFAULT_IDEMPOTENCY_RETENTION_SECONDS,
         }
     }
 
@@ -3076,6 +3257,8 @@ mod tests {
             registry_root,
             executor,
             workspaces: RefCell::new(workspaces),
+            idempotency_records: RefCell::new(HashMap::new()),
+            idempotency_retention_seconds: DEFAULT_IDEMPOTENCY_RETENTION_SECONDS,
         }
     }
 
@@ -3100,6 +3283,12 @@ mod tests {
             "authorization".to_string(),
             format!("Bearer {}", token.trim()),
         );
+        req
+    }
+
+    fn with_idempotency_key(mut req: HttpRequest, key: &str) -> HttpRequest {
+        req.headers
+            .insert("idempotency-key".to_string(), key.to_string());
         req
     }
 
@@ -3583,6 +3772,83 @@ mod tests {
 
         assert_eq!(response_status(&out), 202);
         assert_eq!(parse_response_body(&out)["status"], "accepted");
+    }
+
+    #[test]
+    fn idempotency_key_same_body_replays_original_result() {
+        let body = make_runtime_request_body("test.api.do-something");
+        let state = test_state_with("test.api.do-something", "1.0.0");
+        let req = with_idempotency_key(
+            make_http_request("POST", "/v1/workspaces/ws-test/execute", body),
+            "retry-001",
+        );
+
+        let mut first = Vec::new();
+        handle_execute_workspace(&mut first, &req, &state, true, "ws-test")
+            .expect("first execute must write a response");
+        let mut second = Vec::new();
+        handle_execute_workspace(&mut second, &req, &state, true, "ws-test")
+            .expect("retry execute must write a response");
+
+        assert_eq!(response_status(&first), 200);
+        assert_eq!(response_status(&second), 200);
+        assert_eq!(parse_response_body(&first), parse_response_body(&second));
+        assert_eq!(state.idempotency_records.borrow().len(), 1);
+    }
+
+    #[test]
+    fn idempotency_key_different_body_returns_conflict_problem_details() {
+        let first_body = make_runtime_request_body("test.api.do-something");
+        let second_body = make_runtime_request_body("unknown.capability.does-not-exist");
+        let state = test_state_with("test.api.do-something", "1.0.0");
+        let first_req = with_idempotency_key(
+            make_http_request("POST", "/v1/workspaces/ws-test/execute", first_body),
+            "retry-002",
+        );
+        let second_req = with_idempotency_key(
+            make_http_request("POST", "/v1/workspaces/ws-test/execute", second_body),
+            "retry-002",
+        );
+
+        let mut first = Vec::new();
+        handle_execute_workspace(&mut first, &first_req, &state, true, "ws-test")
+            .expect("first execute must write a response");
+        let mut second = Vec::new();
+        handle_execute_workspace(&mut second, &second_req, &state, true, "ws-test")
+            .expect("conflict must write a response");
+
+        assert_eq!(response_status(&first), 200);
+        assert_eq!(response_status(&second), 409);
+        assert_eq!(response_content_type(&second), "application/problem+json");
+        let resp = parse_response_body(&second);
+        assert_eq!(resp["traverse_code"], "idempotency_key_conflict");
+        assert_eq!(resp["status"], 409);
+    }
+
+    #[test]
+    fn idempotency_retention_defaults_to_24_hours_with_minimum_floor() {
+        let state = empty_state();
+        assert_eq!(
+            state.idempotency_retention_seconds,
+            DEFAULT_IDEMPOTENCY_RETENTION_SECONDS
+        );
+
+        state.idempotency_records.borrow_mut().insert(
+            "old".to_string(),
+            IdempotencyRecord {
+                body_digest: "fnv1a64:old".to_string(),
+                status: 200,
+                reason: "OK".to_string(),
+                content_type: "application/json".to_string(),
+                body: b"{}".to_vec(),
+                stored_at: unix_timestamp().saturating_sub(MIN_IDEMPOTENCY_RETENTION_SECONDS + 1),
+            },
+        );
+        let mut state = state;
+        state.idempotency_retention_seconds = 1;
+        prune_idempotency_records(&state);
+
+        assert!(state.idempotency_records.borrow().is_empty());
     }
 
     #[test]
