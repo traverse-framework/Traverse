@@ -172,7 +172,7 @@ pub struct EventRegistryFailure {
     pub errors: Vec<EventRegistryError>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct EventRegistry {
     contracts: BTreeMap<(RegistryScope, String, String), EventContract>,
     records: BTreeMap<(RegistryScope, String, String), EventRegistryRecord>,

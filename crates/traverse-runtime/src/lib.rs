@@ -40,7 +40,7 @@ const BROWSER_SUBSCRIPTION_GOVERNING_SPEC: &str = "013-browser-runtime-subscript
 const EXECUTION_PREFIX: &str = "exec_";
 const TRACE_PREFIX: &str = "trace_";
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Runtime<E> {
     registry: CapabilityRegistry,
     workflow_registry: WorkflowRegistry,

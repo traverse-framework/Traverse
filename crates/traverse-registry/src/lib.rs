@@ -278,7 +278,7 @@ pub struct RegistryFailure {
     pub errors: Vec<RegistryError>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct CapabilityRegistry {
     contracts: BTreeMap<RegistryKey, CapabilityContract>,
     records: BTreeMap<RegistryKey, CapabilityRegistryRecord>,

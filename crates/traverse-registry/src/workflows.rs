@@ -175,7 +175,7 @@ pub struct WorkflowFailure {
     pub errors: Vec<WorkflowError>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct WorkflowRegistry {
     definitions: BTreeMap<(RegistryScope, String, String), WorkflowDefinition>,
     records: BTreeMap<(RegistryScope, String, String), WorkflowRegistryRecord>,
