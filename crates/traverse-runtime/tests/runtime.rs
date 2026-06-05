@@ -816,6 +816,8 @@ fn base_request_exact() -> RuntimeRequest {
             requested_target: PlacementTarget::Local,
             correlation_id: Some("corr-1".to_string()),
             caller: Some("cli".to_string()),
+            traceparent: None,
+            tracestate: None,
             metadata: None,
         },
         governing_spec: "006-runtime-request-execution".to_string(),

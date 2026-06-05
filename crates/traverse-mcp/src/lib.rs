@@ -1116,6 +1116,8 @@ mod tests {
                 requested_target: traverse_runtime::PlacementTarget::Local,
                 correlation_id: Some("corr-1".to_string()),
                 caller: Some("mcp".to_string()),
+                traceparent: None,
+                tracestate: None,
                 metadata: None,
             },
             governing_spec: "006-runtime-request-execution".to_string(),

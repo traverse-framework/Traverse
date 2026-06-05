@@ -1232,6 +1232,8 @@ mod tests {
                 requested_target: crate::PlacementTarget::Local,
                 correlation_id: None,
                 caller: None,
+                traceparent: None,
+                tracestate: None,
                 metadata: None,
             },
             governing_spec: "006-runtime-request-execution".to_string(),
@@ -1657,29 +1659,34 @@ mod tests {
             )
             .unwrap_or_else(|| unreachable!("fixture capability missing"));
         selected.record.implementation_kind = ImplementationKind::Workflow;
-        let (attempt, mut emitter) = super::super::begin_attempt(RuntimeRequest {
-            kind: "runtime_request".to_string(),
-            schema_version: "1.0.0".to_string(),
-            request_id: "workflow-capability".to_string(),
-            intent: RuntimeIntent {
-                capability_id: Some("content.comments.publish-comment".to_string()),
-                capability_version: Some("1.0.0".to_string()),
-                version_range: None,
-                intent_key: None,
+        let (attempt, mut emitter) = super::super::begin_attempt(
+            RuntimeRequest {
+                kind: "runtime_request".to_string(),
+                schema_version: "1.0.0".to_string(),
+                request_id: "workflow-capability".to_string(),
+                intent: RuntimeIntent {
+                    capability_id: Some("content.comments.publish-comment".to_string()),
+                    capability_version: Some("1.0.0".to_string()),
+                    version_range: None,
+                    intent_key: None,
+                },
+                input: json!({"comment_text": "hello"}),
+                lookup: RuntimeLookup {
+                    scope: RuntimeLookupScope::PublicOnly,
+                    allow_ambiguity: false,
+                },
+                context: RuntimeContext {
+                    requested_target: crate::PlacementTarget::Local,
+                    correlation_id: None,
+                    caller: None,
+                    traceparent: None,
+                    tracestate: None,
+                    metadata: None,
+                },
+                governing_spec: "006-runtime-request-execution".to_string(),
             },
-            input: json!({"comment_text": "hello"}),
-            lookup: RuntimeLookup {
-                scope: RuntimeLookupScope::PublicOnly,
-                allow_ambiguity: false,
-            },
-            context: RuntimeContext {
-                requested_target: crate::PlacementTarget::Local,
-                correlation_id: None,
-                caller: None,
-                metadata: None,
-            },
-            governing_spec: "006-runtime-request-execution".to_string(),
-        });
+            crate::RuntimeObservabilityConfig::default(),
+        );
         emitter.push(
             crate::RuntimeState::Discovering,
             crate::RuntimeTransitionReasonCode::RequestStarted,
@@ -1731,10 +1738,13 @@ mod tests {
             workflow_id: "content.comments.publish-comment".to_string(),
             workflow_version: "1.0.0".to_string(),
         });
-        let (attempt, mut emitter) = super::super::begin_attempt(RuntimeRequest {
-            request_id: "workflow-private".to_string(),
-            ..valid_runtime_request()
-        });
+        let (attempt, mut emitter) = super::super::begin_attempt(
+            RuntimeRequest {
+                request_id: "workflow-private".to_string(),
+                ..valid_runtime_request()
+            },
+            crate::RuntimeObservabilityConfig::default(),
+        );
         emitter.push(
             crate::RuntimeState::Discovering,
             crate::RuntimeTransitionReasonCode::RequestStarted,
@@ -2148,6 +2158,8 @@ mod tests {
                 requested_target: crate::PlacementTarget::Local,
                 correlation_id: None,
                 caller: None,
+                traceparent: None,
+                tracestate: None,
                 metadata: None,
             },
             governing_spec: "006-runtime-request-execution".to_string(),

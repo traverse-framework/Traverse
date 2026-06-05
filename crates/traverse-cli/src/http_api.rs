@@ -4681,17 +4681,21 @@ fn handle_trace_fetch<W: Write, E: LocalExecutor + Clone>(
 
 fn public_trace_envelope(workspace_id: &str, trace: &RuntimeTrace) -> Value {
     let spans: Vec<Value> = trace
-        .state_transitions
+        .otel_trace
+        .spans
         .iter()
-        .enumerate()
-        .map(|(index, transition)| {
+        .map(|span| {
             json!({
-                "span_id": format!("{}:span:{index}", trace.trace_id),
-                "name": "runtime.state_transition",
-                "from_state": transition.from_state,
-                "to_state": transition.to_state,
-                "reason_code": transition.reason_code,
-                "occurred_at": transition.occurred_at,
+                "trace_id": span.trace_id,
+                "span_id": span.span_id,
+                "parent_span_id": span.parent_span_id,
+                "name": span.name,
+                "kind": span.kind,
+                "status": span.status,
+                "started_at": span.started_at,
+                "ended_at": span.ended_at,
+                "attributes": span.attributes,
+                "events": span.events,
             })
         })
         .collect();
@@ -4722,6 +4726,10 @@ fn public_trace_envelope(workspace_id: &str, trace: &RuntimeTrace) -> Value {
         "api_version": "v1",
         "execution_id": trace.execution_id,
         "trace_id": trace.trace_id,
+        "otel_trace_id": trace.otel_trace.trace_id,
+        "traceparent": trace.otel_trace.parent_traceparent,
+        "tracestate": trace.otel_trace.tracestate,
+        "otel_exporter": trace.otel_trace.exporter,
         "status": if trace.result.status == RuntimeResultStatus::Error {
             "failed"
         } else {

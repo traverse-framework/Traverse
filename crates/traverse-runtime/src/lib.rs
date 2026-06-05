@@ -45,6 +45,7 @@ pub struct Runtime<E> {
     registry: CapabilityRegistry,
     workflow_registry: WorkflowRegistry,
     executor: E,
+    observability: RuntimeObservabilityConfig,
 }
 
 impl<E> Runtime<E> {
@@ -54,6 +55,7 @@ impl<E> Runtime<E> {
             registry,
             workflow_registry: WorkflowRegistry::new(),
             executor,
+            observability: RuntimeObservabilityConfig::default(),
         }
     }
 
@@ -61,6 +63,17 @@ impl<E> Runtime<E> {
     pub fn with_workflow_registry(mut self, workflow_registry: WorkflowRegistry) -> Self {
         self.workflow_registry = workflow_registry;
         self
+    }
+
+    #[must_use]
+    pub fn with_observability_config(mut self, observability: RuntimeObservabilityConfig) -> Self {
+        self.observability = observability;
+        self
+    }
+
+    #[must_use]
+    pub fn observability_config(&self) -> &RuntimeObservabilityConfig {
+        &self.observability
     }
 
     /// Returns a reference to the capability registry.
@@ -198,7 +211,70 @@ pub struct RuntimeContext {
     #[serde(default)]
     pub caller: Option<String>,
     #[serde(default)]
+    pub traceparent: Option<String>,
+    #[serde(default)]
+    pub tracestate: Option<String>,
+    #[serde(default)]
     pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeObservabilityConfig {
+    pub signals: OTelSignalConfig,
+    pub exporter: OTelExporterConfig,
+    pub deterministic_ids: bool,
+    #[serde(default)]
+    pub deterministic_seed: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OTelSignalConfig {
+    pub traces_enabled: bool,
+    pub logs_enabled: bool,
+    pub metrics_enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OTelExporterConfig {
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    pub protocol: OtlpProtocol,
+}
+
+impl Default for RuntimeObservabilityConfig {
+    fn default() -> Self {
+        Self {
+            signals: OTelSignalConfig {
+                traces_enabled: true,
+                logs_enabled: false,
+                metrics_enabled: false,
+            },
+            exporter: OTelExporterConfig {
+                endpoint: None,
+                protocol: OtlpProtocol::Http,
+            },
+            deterministic_ids: false,
+            deterministic_seed: None,
+        }
+    }
+}
+
+impl RuntimeObservabilityConfig {
+    #[must_use]
+    pub fn deterministic_test(seed: &str) -> Self {
+        Self {
+            deterministic_ids: true,
+            deterministic_seed: Some(seed.to_string()),
+            ..Self::default()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OtlpProtocol {
+    Http,
+    Grpc,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -340,6 +416,68 @@ pub struct RuntimeTrace {
     pub selection: SelectionRecord,
     pub execution: ExecutionRecord,
     pub result: TraceResultRecord,
+    pub otel_trace: OTelTraceRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OTelTraceRecord {
+    pub trace_id: String,
+    #[serde(default)]
+    pub parent_traceparent: Option<String>,
+    #[serde(default)]
+    pub tracestate: Option<String>,
+    pub exporter: OTelExporterRecord,
+    pub spans: Vec<OTelSpanRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OTelExporterRecord {
+    pub enabled: bool,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    pub protocol: OtlpProtocol,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OTelSpanRecord {
+    pub trace_id: String,
+    pub span_id: String,
+    #[serde(default)]
+    pub parent_span_id: Option<String>,
+    pub name: String,
+    pub kind: OTelSpanKind,
+    pub status: OTelSpanStatus,
+    pub started_at: String,
+    pub ended_at: String,
+    pub attributes: Vec<OTelAttribute>,
+    #[serde(default)]
+    pub events: Vec<OTelSpanEvent>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OTelSpanKind {
+    Internal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum OTelSpanStatus {
+    Ok,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OTelAttribute {
+    pub key: String,
+    pub value: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OTelSpanEvent {
+    pub name: String,
+    pub timestamp: String,
+    pub attributes: Vec<OTelAttribute>,
 }
 
 impl RuntimeTrace {
@@ -843,7 +981,7 @@ where
     /// Executes one runtime request against the current registry state.
     #[must_use]
     pub fn execute(&self, request: RuntimeRequest) -> RuntimeExecutionOutcome {
-        let (attempt, mut emitter) = begin_attempt(request);
+        let (attempt, mut emitter) = begin_attempt(request, self.observability.clone());
         emitter.push(
             RuntimeState::Discovering,
             RuntimeTransitionReasonCode::RequestStarted,
@@ -1201,6 +1339,18 @@ where
 }
 
 fn terminal_failure(context: FailureContext) -> RuntimeExecutionOutcome {
+    let result_record = TraceResultRecord {
+        status: RuntimeResultStatus::Error,
+        output: None,
+        error: Some(context.error.clone()),
+    };
+    let otel_trace = otel_trace_record(
+        &context.attempt,
+        &context.state_transitions,
+        &context.selection,
+        &context.execution,
+        &result_record,
+    );
     let trace = RuntimeTrace {
         kind: RUNTIME_TRACE_KIND.to_string(),
         schema_version: SUPPORTED_SCHEMA_VERSION.to_string(),
@@ -1231,11 +1381,8 @@ fn terminal_failure(context: FailureContext) -> RuntimeExecutionOutcome {
         candidate_collection: context.candidate_collection,
         selection: context.selection,
         execution: context.execution,
-        result: TraceResultRecord {
-            status: RuntimeResultStatus::Error,
-            output: None,
-            error: Some(context.error.clone()),
-        },
+        result: result_record,
+        otel_trace,
     };
 
     let result = RuntimeResult {
@@ -1296,7 +1443,10 @@ fn resolve_placement(
     ))
 }
 
-fn begin_attempt(request: RuntimeRequest) -> (AttemptContext, StateEmitter) {
+fn begin_attempt(
+    request: RuntimeRequest,
+    observability: RuntimeObservabilityConfig,
+) -> (AttemptContext, StateEmitter) {
     let request_id = request.request_id.clone();
     let execution_id = format!("{EXECUTION_PREFIX}{request_id}");
     let trace_id = format!("{TRACE_PREFIX}{execution_id}");
@@ -1317,6 +1467,7 @@ fn begin_attempt(request: RuntimeRequest) -> (AttemptContext, StateEmitter) {
             request,
             execution_id,
             trace_id,
+            observability,
         },
         emitter,
     )
@@ -1680,6 +1831,18 @@ fn successful_execution_outcome(
         output_digest: Some(content_digest(&execution_output)),
         failure_reason: None,
     };
+    let result_record = TraceResultRecord {
+        status: RuntimeResultStatus::Completed,
+        output: Some(execution_output.clone()),
+        error: None,
+    };
+    let otel_trace = otel_trace_record(
+        &attempt,
+        &finished.transitions,
+        &selection,
+        &execution,
+        &result_record,
+    );
 
     let trace = RuntimeTrace {
         kind: RUNTIME_TRACE_KIND.to_string(),
@@ -1711,11 +1874,8 @@ fn successful_execution_outcome(
         candidate_collection,
         selection,
         execution,
-        result: TraceResultRecord {
-            status: RuntimeResultStatus::Completed,
-            output: Some(execution_output.clone()),
-            error: None,
-        },
+        result: result_record,
+        otel_trace,
     };
 
     let result = RuntimeResult {
@@ -2061,6 +2221,227 @@ fn content_digest(value: &Value) -> String {
     format!("0.1.0:{hash:016x}")
 }
 
+fn otel_trace_record(
+    attempt: &AttemptContext,
+    state_transitions: &[RuntimeTransitionRecord],
+    selection: &SelectionRecord,
+    execution: &ExecutionRecord,
+    result: &TraceResultRecord,
+) -> OTelTraceRecord {
+    let trace_id = otel_trace_id(attempt);
+    let root_span_id = otel_span_id(attempt, "runtime.request", 0);
+    let mut spans = vec![otel_span(OTelSpanInput {
+        trace_id: &trace_id,
+        span_id: &root_span_id,
+        parent_span_id: None,
+        name: "traverse.runtime.request",
+        status: span_status(result.status),
+        started_at: first_transition_time(state_transitions),
+        ended_at: last_transition_time(state_transitions),
+        attributes: base_otel_attributes(attempt, selection, execution),
+        events: error_events(result),
+    })];
+
+    for (index, phase) in otel_phase_names().iter().enumerate() {
+        spans.push(otel_span(OTelSpanInput {
+            trace_id: &trace_id,
+            span_id: &otel_span_id(attempt, phase, index + 1),
+            parent_span_id: Some(root_span_id.clone()),
+            name: phase,
+            status: phase_status(phase, result.status),
+            started_at: phase_started_at(state_transitions, index),
+            ended_at: phase_ended_at(state_transitions, index),
+            attributes: base_otel_attributes(attempt, selection, execution),
+            events: if result.status == RuntimeResultStatus::Error
+                && *phase == "traverse.trace.assembly"
+            {
+                error_events(result)
+            } else {
+                Vec::new()
+            },
+        }));
+    }
+
+    OTelTraceRecord {
+        trace_id,
+        parent_traceparent: attempt.request.context.traceparent.clone(),
+        tracestate: attempt.request.context.tracestate.clone(),
+        exporter: OTelExporterRecord {
+            enabled: attempt.observability.exporter.endpoint.is_some(),
+            endpoint: attempt.observability.exporter.endpoint.clone(),
+            protocol: attempt.observability.exporter.protocol,
+        },
+        spans,
+    }
+}
+
+fn otel_phase_names() -> [&'static str; 5] {
+    [
+        "traverse.request.intake",
+        "traverse.registry.lookup",
+        "traverse.contract.validation",
+        "traverse.capability.execution",
+        "traverse.trace.assembly",
+    ]
+}
+
+fn otel_trace_id(attempt: &AttemptContext) -> String {
+    if attempt.observability.deterministic_ids {
+        let seed = attempt
+            .observability
+            .deterministic_seed
+            .as_deref()
+            .unwrap_or("traverse-test");
+        return deterministic_hex(seed, &attempt.trace_id, 32);
+    }
+    deterministic_hex("traverse-runtime", &attempt.trace_id, 32)
+}
+
+fn otel_span_id(attempt: &AttemptContext, name: &str, index: usize) -> String {
+    let seed = attempt
+        .observability
+        .deterministic_seed
+        .as_deref()
+        .unwrap_or("traverse-runtime");
+    deterministic_hex(
+        seed,
+        &format!("{}:{name}:{index}", attempt.execution_id),
+        16,
+    )
+}
+
+fn deterministic_hex(seed: &str, value: &str, len: usize) -> String {
+    let mut hash: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+    for byte in seed.as_bytes().iter().chain(value.as_bytes()) {
+        hash ^= u128::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0000_0100_0000_0000_0000_0000_013b);
+    }
+    format!("{hash:032x}").chars().take(len).collect()
+}
+
+struct OTelSpanInput<'a> {
+    trace_id: &'a str,
+    span_id: &'a str,
+    parent_span_id: Option<String>,
+    name: &'a str,
+    status: OTelSpanStatus,
+    started_at: String,
+    ended_at: String,
+    attributes: Vec<OTelAttribute>,
+    events: Vec<OTelSpanEvent>,
+}
+
+fn otel_span(input: OTelSpanInput<'_>) -> OTelSpanRecord {
+    OTelSpanRecord {
+        trace_id: input.trace_id.to_string(),
+        span_id: input.span_id.to_string(),
+        parent_span_id: input.parent_span_id,
+        name: input.name.to_string(),
+        kind: OTelSpanKind::Internal,
+        status: input.status,
+        started_at: input.started_at,
+        ended_at: input.ended_at,
+        attributes: input.attributes,
+        events: input.events,
+    }
+}
+
+fn base_otel_attributes(
+    attempt: &AttemptContext,
+    selection: &SelectionRecord,
+    execution: &ExecutionRecord,
+) -> Vec<OTelAttribute> {
+    let mut attributes = vec![
+        otel_attr("traverse.request.id", json!(attempt.request.request_id)),
+        otel_attr("traverse.execution.id", json!(attempt.execution_id)),
+        otel_attr("traverse.lookup.scope", json!(attempt.request.lookup.scope)),
+        otel_attr(
+            "traverse.runtime.placement.target",
+            json!(execution.placement_target),
+        ),
+    ];
+    if let Some(correlation_id) = &attempt.request.context.correlation_id {
+        attributes.push(otel_attr("traverse.correlation.id", json!(correlation_id)));
+    }
+    if let Some(capability_id) = &selection.selected_capability_id {
+        attributes.push(otel_attr("traverse.capability.id", json!(capability_id)));
+    }
+    if let Some(capability_version) = &selection.selected_capability_version {
+        attributes.push(otel_attr(
+            "traverse.capability.version",
+            json!(capability_version),
+        ));
+    }
+    attributes
+}
+
+fn otel_attr(key: &str, value: Value) -> OTelAttribute {
+    OTelAttribute {
+        key: key.to_string(),
+        value,
+    }
+}
+
+fn error_events(result: &TraceResultRecord) -> Vec<OTelSpanEvent> {
+    result
+        .error
+        .as_ref()
+        .map(|error| {
+            vec![OTelSpanEvent {
+                name: "exception".to_string(),
+                timestamp: "1970-01-01T00:00:00Z".to_string(),
+                attributes: vec![
+                    otel_attr("traverse.error.classification", json!(error.code)),
+                    otel_attr("traverse.error.message", json!(error.message)),
+                ],
+            }]
+        })
+        .unwrap_or_default()
+}
+
+fn span_status(status: RuntimeResultStatus) -> OTelSpanStatus {
+    match status {
+        RuntimeResultStatus::Completed => OTelSpanStatus::Ok,
+        RuntimeResultStatus::Error => OTelSpanStatus::Error,
+    }
+}
+
+fn phase_status(phase: &str, status: RuntimeResultStatus) -> OTelSpanStatus {
+    if status == RuntimeResultStatus::Error && phase == "traverse.trace.assembly" {
+        OTelSpanStatus::Error
+    } else {
+        OTelSpanStatus::Ok
+    }
+}
+
+fn first_transition_time(transitions: &[RuntimeTransitionRecord]) -> String {
+    transitions.first().map_or_else(
+        || "1970-01-01T00:00:00Z".to_string(),
+        |transition| transition.occurred_at.clone(),
+    )
+}
+
+fn last_transition_time(transitions: &[RuntimeTransitionRecord]) -> String {
+    transitions.last().map_or_else(
+        || "1970-01-01T00:00:00Z".to_string(),
+        |transition| transition.occurred_at.clone(),
+    )
+}
+
+fn phase_started_at(transitions: &[RuntimeTransitionRecord], index: usize) -> String {
+    transitions.get(index).map_or_else(
+        || first_transition_time(transitions),
+        |transition| transition.occurred_at.clone(),
+    )
+}
+
+fn phase_ended_at(transitions: &[RuntimeTransitionRecord], index: usize) -> String {
+    transitions.get(index + 1).map_or_else(
+        || last_transition_time(transitions),
+        |transition| transition.occurred_at.clone(),
+    )
+}
+
 fn contains_drafts_segment(path: &str) -> bool {
     path.replace('\\', "/")
         .split('/')
@@ -2071,6 +2452,7 @@ struct AttemptContext {
     request: RuntimeRequest,
     execution_id: String,
     trace_id: String,
+    observability: RuntimeObservabilityConfig,
 }
 
 struct CandidateResolution {
@@ -2765,6 +3147,7 @@ mod tests {
             request: valid_request(),
             execution_id: "exec_1".to_string(),
             trace_id: "trace_exec_1".to_string(),
+            observability: super::RuntimeObservabilityConfig::default(),
         };
         let capability = resolved_capability(
             Some(traverse_registry::BinaryReference {
@@ -2827,6 +3210,95 @@ mod tests {
     }
 
     #[test]
+    fn runtime_execution_produces_otel_phase_spans() {
+        let mut registry = CapabilityRegistry::new();
+        assert!(registry.register(public_registration()).is_ok());
+        let runtime = Runtime::new(registry, NoopExecutor);
+        let outcome = runtime.execute(valid_request());
+        let spans = &outcome.trace.otel_trace.spans;
+        let names: Vec<&str> = spans.iter().map(|span| span.name.as_str()).collect();
+
+        assert_eq!(spans.len(), 6);
+        assert!(names.contains(&"traverse.runtime.request"));
+        assert!(names.contains(&"traverse.request.intake"));
+        assert!(names.contains(&"traverse.registry.lookup"));
+        assert!(names.contains(&"traverse.contract.validation"));
+        assert!(names.contains(&"traverse.capability.execution"));
+        assert!(names.contains(&"traverse.trace.assembly"));
+        assert!(
+            spans
+                .iter()
+                .all(|span| span.status == super::OTelSpanStatus::Ok)
+        );
+        assert!(spans.iter().all(|span| {
+            span.attributes
+                .iter()
+                .all(|attr| attr.key.starts_with("traverse.") || attr.key == "service.name")
+        }));
+    }
+
+    #[test]
+    fn runtime_otel_trace_propagates_w3c_context_and_exporter_config() {
+        let mut registry = CapabilityRegistry::new();
+        assert!(registry.register(public_registration()).is_ok());
+        let runtime = Runtime::new(registry, NoopExecutor).with_observability_config(
+            super::RuntimeObservabilityConfig {
+                exporter: super::OTelExporterConfig {
+                    endpoint: Some("http://collector:4318".to_string()),
+                    protocol: super::OtlpProtocol::Http,
+                },
+                ..super::RuntimeObservabilityConfig::deterministic_test("seed-1")
+            },
+        );
+        let mut request = valid_request();
+        request.context.traceparent =
+            Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_string());
+        request.context.tracestate = Some("vendor=value".to_string());
+
+        let first = runtime.execute(request.clone()).trace.otel_trace;
+        let second = runtime.execute(request).trace.otel_trace;
+
+        assert_eq!(first.trace_id, second.trace_id);
+        assert_eq!(first.spans[0].span_id, second.spans[0].span_id);
+        assert_eq!(
+            first.parent_traceparent.as_deref(),
+            Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+        );
+        assert_eq!(first.tracestate.as_deref(), Some("vendor=value"));
+        assert!(first.exporter.enabled);
+        assert_eq!(
+            first.exporter.endpoint.as_deref(),
+            Some("http://collector:4318")
+        );
+        assert_eq!(
+            runtime.observability_config().exporter.endpoint.as_deref(),
+            Some("http://collector:4318")
+        );
+    }
+
+    #[test]
+    fn otel_timestamp_helpers_default_without_transitions() {
+        let transitions = Vec::new();
+
+        assert_eq!(
+            super::first_transition_time(&transitions),
+            "1970-01-01T00:00:00Z"
+        );
+        assert_eq!(
+            super::last_transition_time(&transitions),
+            "1970-01-01T00:00:00Z"
+        );
+        assert_eq!(
+            super::phase_started_at(&transitions, 0),
+            "1970-01-01T00:00:00Z"
+        );
+        assert_eq!(
+            super::phase_ended_at(&transitions, 0),
+            "1970-01-01T00:00:00Z"
+        );
+    }
+
+    #[test]
     fn state_emitter_records_transition_validation_and_rejects_invalid_moves() {
         let mut events = super::StateEmitter::new("exec_1", "req_1");
 
@@ -2882,6 +3354,7 @@ mod tests {
                     request: valid_request(),
                     execution_id: "exec_1".to_string(),
                     trace_id: "trace_exec_1".to_string(),
+                    observability: super::RuntimeObservabilityConfig::default(),
                 },
                 emitter: events,
                 candidate_collection: super::CandidateCollectionRecord {
@@ -3053,6 +3526,8 @@ mod tests {
                 requested_target: PlacementTarget::Local,
                 correlation_id: None,
                 caller: None,
+                traceparent: None,
+                tracestate: None,
                 metadata: None,
             },
             governing_spec: "006-runtime-request-execution".to_string(),
