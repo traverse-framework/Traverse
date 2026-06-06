@@ -8,7 +8,7 @@
 [![Spec Governed](https://img.shields.io/badge/spec-governed-blueviolet)](specs/governance/approved-specs.json)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.94%2B-orange)](https://www.rust-lang.org/)
-[![Version](https://img.shields.io/badge/version-v0.1--rc-lightgrey)](https://github.com/enricopiovesan/Traverse/releases)
+[![Version](https://img.shields.io/badge/version-v0.3.0-blue)](https://github.com/enricopiovesan/Traverse/releases)
 
 
 
