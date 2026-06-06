@@ -1795,6 +1795,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "sha2",
  "traverse-contracts",
  "traverse-registry",
  "traverse-runtime",
