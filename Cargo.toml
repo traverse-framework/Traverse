@@ -26,3 +26,8 @@ unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 todo = "deny"
+
+[workspace.metadata.cyclonedx]
+all_features = true
+format = "json"
+output = "traverse-sbom.cdx.json"

@@ -2,6 +2,7 @@ mod agent_packages;
 mod browser_adapter;
 mod federation_operator;
 mod http_api;
+mod supply_chain;
 
 use agent_packages::load_agent_package;
 use browser_adapter::serve_local_browser_adapter;
@@ -55,6 +56,9 @@ enum Command {
     },
     WasmAbiVerify {
         wasm_paths: Vec<PathBuf>,
+    },
+    ArtifactVerify {
+        artifact_path: PathBuf,
     },
     FederationPeers {
         manifest_path: PathBuf,
@@ -202,6 +206,7 @@ fn run_command(command: Command) -> Result<String, CliError> {
             request_path,
         } => execute_agent(&manifest_path, &request_path),
         Command::WasmAbiVerify { wasm_paths } => verify_wasm_abi_imports(&wasm_paths),
+        Command::ArtifactVerify { artifact_path } => verify_supply_chain_artifact(&artifact_path),
         Command::FederationPeers { manifest_path } => {
             render_federation_peers(&manifest_path).map_err(CliError::IoError)
         }
@@ -263,6 +268,7 @@ fn parse_command(args: &[String]) -> Result<Command, String> {
         (Some("serve"), _) => parse_serve_command(args),
         (Some("federation"), Some(_)) => parse_federation_command(args),
         (Some("agent"), Some("execute")) => parse_agent_execute_command(args),
+        (Some("artifact"), Some("verify")) => parse_artifact_verify_command(args),
         (Some("wasm"), Some("abi")) => parse_wasm_abi_command(args),
         (Some("expedition"), Some("execute")) => parse_expedition_execute_command(args),
         (Some("capability"), Some("discover")) => parse_capability_discover_command(args),
@@ -279,6 +285,8 @@ fn subcommand_help(family: Option<&str>, subcommand: Option<&str>) -> String {
         (Some("agent"), Some("inspect")) => help_agent_inspect(),
         (Some("agent"), Some("execute")) => help_agent_execute(),
         (Some("agent"), _) => help_agent(),
+        (Some("artifact"), Some("verify")) => help_artifact_verify(),
+        (Some("artifact"), _) => help_artifact(),
         (Some("wasm"), Some("abi")) => help_wasm_abi(),
         (Some("wasm"), _) => help_wasm(),
         (Some("workflow"), Some("register")) => help_workflow_register(),
@@ -399,6 +407,36 @@ fn help_agent() -> String {
     execute <manifest-path> <request-path>       Execute an agent against a runtime request.
 
   Run `traverse-cli agent <subcommand> --help` for subcommand-specific help."
+        .to_string()
+}
+
+fn help_artifact_verify() -> String {
+    "traverse-cli artifact verify <artifact-or-manifest-path>
+
+  Purpose:
+    Verify one governed artifact's supply-chain evidence. The command reads
+    either a manifest JSON path or an artifact path with sidecars named
+    <artifact>.manifest.json and <artifact>.provenance.json, then emits a
+    structured JSON report for checksum, signature, and provenance checks.
+
+  Required arguments:
+    <artifact-or-manifest-path>   Artifact file or artifact manifest JSON path.
+
+  Optional flags:
+    --help                       Print this help text.
+
+  Example:
+    traverse-cli artifact verify target/release/traverse-cli"
+        .to_string()
+}
+
+fn help_artifact() -> String {
+    "traverse-cli artifact <subcommand> [options]
+
+  Subcommands:
+    verify <artifact-or-manifest-path>   Verify checksum, signature, and provenance evidence.
+
+  Run `traverse-cli artifact verify --help` for subcommand-specific help."
         .to_string()
 }
 
@@ -824,6 +862,15 @@ fn parse_fixed_arity_command(args: &[String]) -> Result<Command, String> {
     }
 }
 
+fn parse_artifact_verify_command(args: &[String]) -> Result<Command, String> {
+    match args {
+        [_, _, _, artifact_path] => Ok(Command::ArtifactVerify {
+            artifact_path: PathBuf::from(artifact_path),
+        }),
+        _ => Err(usage()),
+    }
+}
+
 fn parse_agent_execute_command(args: &[String]) -> Result<Command, String> {
     match args {
         [_, _, _, manifest_path, request_path] => Ok(Command::AgentExecute {
@@ -1062,6 +1109,17 @@ fn verify_wasm_abi_imports(wasm_paths: &[PathBuf]) -> Result<String, CliError> {
     }
 
     Ok(lines.join("\n"))
+}
+
+fn verify_supply_chain_artifact(artifact_path: &Path) -> Result<String, CliError> {
+    let report = supply_chain::verify_artifact(artifact_path);
+    let json = serde_json::to_string_pretty(&report)
+        .map_err(|e| CliError::IoError(format!("failed to serialize artifact report: {e}")))?;
+    if report.passed() {
+        Ok(json)
+    } else {
+        Err(CliError::ValidationFailed(json))
+    }
 }
 
 fn execute_expedition(
@@ -2428,6 +2486,12 @@ mod tests {
             "verify".to_string(),
             "examples/hello-world/say-hello-agent/artifacts/say-hello-agent.wasm".to_string(),
         ];
+        let artifact_verify = vec![
+            "traverse-cli".to_string(),
+            "artifact".to_string(),
+            "verify".to_string(),
+            "target/release/traverse-cli".to_string(),
+        ];
         let expedition_execute = vec![
             "traverse-cli".to_string(),
             "expedition".to_string(),
@@ -2467,6 +2531,7 @@ mod tests {
         assert!(parse_command(&agent_inspect).is_ok());
         assert!(parse_command(&agent_execute).is_ok());
         assert!(parse_command(&wasm_abi_verify).is_ok());
+        assert!(parse_command(&artifact_verify).is_ok());
         assert!(parse_command(&expedition_execute).is_ok());
         assert!(parse_command(&expedition_execute_with_trace).is_ok());
         assert!(parse_command(&event).is_ok());
@@ -2675,6 +2740,22 @@ mod tests {
         assert!(text.contains("agent execute"));
         assert!(text.contains("<manifest-path>"));
         assert!(text.contains("<request-path>"));
+        assert!(text.contains("Example:"));
+    }
+
+    #[test]
+    fn parse_command_returns_artifact_verify_help_on_help_flag() {
+        let args = vec![
+            "traverse-cli".to_string(),
+            "artifact".to_string(),
+            "verify".to_string(),
+            "--help".to_string(),
+        ];
+        let result = parse_command(&args);
+        assert!(result.is_err(), "expected Err for --help");
+        let text = result.err().unwrap_or_default();
+        assert!(text.contains("artifact verify"));
+        assert!(text.contains("<artifact-or-manifest-path>"));
         assert!(text.contains("Example:"));
     }
 

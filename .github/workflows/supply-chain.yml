@@ -1,0 +1,41 @@
+name: Supply Chain
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  supply-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.94.0
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run supply-chain checks
+        run: bash scripts/ci/supply_chain_check.sh
+
+      - name: Upload supply-chain evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: traverse-supply-chain-evidence
+          path: |
+            target/supply-chain/traverse-sbom.cdx.json
+            target/supply-chain/supply-chain-summary.json
+            target/supply-chain/artifact-verify-report.json
+            target/supply-chain/traverse-cli.provenance.json
