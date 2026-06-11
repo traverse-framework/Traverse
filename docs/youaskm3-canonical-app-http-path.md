@@ -60,6 +60,8 @@ Requirements:
 - an HTTP client such as `curl`
 - `jq` for the copy/pasteable shell examples below
 
+For packaging and source-build expectations, see [docs/v0.3.0-source-build-consumer-packaging.md](v0.3.0-source-build-consumer-packaging.md).
+
 ## Discover The Server
 
 In another terminal, read the local discovery file:

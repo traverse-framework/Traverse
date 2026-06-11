@@ -33,6 +33,8 @@ Requirements:
 - local source checkout of Traverse `v0.3.0`
 - an MCP client that supports stdio server commands
 
+For packaging and source-build expectations, see [docs/v0.3.0-source-build-consumer-packaging.md](v0.3.0-source-build-consumer-packaging.md).
+
 ## Example Client Configuration
 
 For a stdio MCP client that accepts JSON server configuration, use this shape and replace `/absolute/path/to/Traverse` with the local Traverse checkout:
