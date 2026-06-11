@@ -24,6 +24,7 @@ required_files=(
   "docs/youaskm3-canonical-mcp-client-path.md"
   "docs/mcp-real-agent-exercise.md"
   "docs/app-consumable-release-checklist.md"
+  "docs/youaskm3-canonical-app-http-path.md"
   "docs/app-consumable-consumer-bundle.md"
   "docs/app-consumable-release-artifact.md"
   "docs/app-consumable-package-release-pointer.md"
@@ -325,6 +326,15 @@ grep -q "## Prerequisites" quickstart.md
 grep -q "browser-adapter serve --bind 127.0.0.1:4174" quickstart.md
 grep -q "node apps/react-demo/server.mjs --adapter http://127.0.0.1:4174 --port 4173" quickstart.md
 grep -q "apps/browser-consumer/README.md" docs/app-consumable-entry-path.md
+grep -q "docs/youaskm3-canonical-app-http-path.md" README.md
+grep -q "docs/youaskm3-canonical-app-http-path.md" docs/app-consumable-entry-path.md
+grep -q "Supported Traverse baseline: \`v0.3.0\`" docs/youaskm3-canonical-app-http-path.md
+grep -q "cargo run -p traverse-cli -- serve" docs/youaskm3-canonical-app-http-path.md
+grep -q ".traverse/server.json" docs/youaskm3-canonical-app-http-path.md
+grep -q "POST /v1/workspaces/{workspace_id}/capabilities" docs/youaskm3-canonical-app-http-path.md
+grep -q "POST /v1/workspaces/{workspace_id}/execute" docs/youaskm3-canonical-app-http-path.md
+grep -q "GET /v1/workspaces/{workspace_id}/traces/{execution_id}" docs/youaskm3-canonical-app-http-path.md
+grep -q "bash scripts/ci/app_consumable_acceptance.sh" docs/youaskm3-canonical-app-http-path.md
 grep -q "browser-targeted consumer package" apps/browser-consumer/README.md
 grep -q "browser_consumer_package_smoke.sh" apps/browser-consumer/README.md
 grep -q "browser-hosted app" apps/browser-consumer/README.md

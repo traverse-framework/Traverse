@@ -204,6 +204,7 @@ Traverse is spec-driven. Code must align with an approved, immutable spec or it 
 - [docs/workflow-composition-guide.md](docs/workflow-composition-guide.md) — beginner guide to chaining two capabilities into a workflow
 - [docs/tutorial-index.md](docs/tutorial-index.md) — ordered onboarding path for new developers and agents
 - [quickstart.md](quickstart.md) — start here for the first runnable flow
+- [docs/youaskm3-canonical-app-http-path.md](docs/youaskm3-canonical-app-http-path.md) — canonical v0.3.0 HTTP app path for youaskm3
 - [docs/app-consumable-entry-path.md](docs/app-consumable-entry-path.md) — first app-consumable flow
 - [docs/app-consumable-consumer-bundle.md](docs/app-consumable-consumer-bundle.md) — versioned consumer bundle
 - [docs/app-consumable-package-release-pointer.md](docs/app-consumable-package-release-pointer.md) — package release pointer
@@ -219,6 +220,7 @@ Traverse is spec-driven. Code must align with an approved, immutable spec or it 
 
 - [docs/app-consumable-consumer-bundle.md](docs/app-consumable-consumer-bundle.md) — versioned consumer bundle
 - [docs/app-consumable-package-release-pointer.md](docs/app-consumable-package-release-pointer.md) — package release pointer
+- [docs/youaskm3-canonical-app-http-path.md](docs/youaskm3-canonical-app-http-path.md) — release-facing HTTP app path for youaskm3
 - [docs/event-publishing-tutorial.md](docs/event-publishing-tutorial.md) — how to emit and receive governed events from a capability
 - [docs/youaskm3-canonical-mcp-client-path.md](docs/youaskm3-canonical-mcp-client-path.md) — release-facing MCP client path for youaskm3
 - [docs/packaged-traverse-runtime-artifact.md](docs/packaged-traverse-runtime-artifact.md) — packaged runtime artifact

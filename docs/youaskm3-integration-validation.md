@@ -11,6 +11,7 @@ It stays on governed public Traverse surfaces only:
 - the versioned Traverse consumer bundle
 - the real-agent MCP exercise guide
 - the published-artifact validation path for the released Traverse runtime and MCP artifacts
+- the canonical HTTP/JSON app path at [docs/youaskm3-canonical-app-http-path.md](youaskm3-canonical-app-http-path.md)
 - [docs/youaskm3-published-artifact-validation.md](youaskm3-published-artifact-validation.md)
 - [docs/youaskm3-compatibility-conformance-suite.md](youaskm3-compatibility-conformance-suite.md)
 - the `youaskm3` compatibility conformance suite
@@ -18,6 +19,8 @@ It stays on governed public Traverse surfaces only:
 - the `youaskm3` real shell validation
 
 For the shortest Traverse-side start path, begin with [quickstart.md](../quickstart.md).
+
+For the first release-facing HTTP/JSON app path, use [docs/youaskm3-canonical-app-http-path.md](youaskm3-canonical-app-http-path.md).
 
 ## Governing Spec
 
