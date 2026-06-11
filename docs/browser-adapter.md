@@ -17,6 +17,7 @@ The current approved path is the local adapter used by the app-consumable quicks
 Relevant docs:
 
 - [quickstart.md](../quickstart.md)
+- [docs/youaskm3-canonical-app-http-path.md](youaskm3-canonical-app-http-path.md)
 - [docs/app-consumable-entry-path.md](app-consumable-entry-path.md)
 - [apps/browser-consumer/README.md](../apps/browser-consumer/README.md)
 - [docs/adapter-boundaries.md](adapter-boundaries.md)
@@ -80,6 +81,7 @@ Primary docs:
 
 - [quickstart.md](../quickstart.md)
 - [docs/app-consumable-entry-path.md](app-consumable-entry-path.md)
+- [docs/youaskm3-canonical-app-http-path.md](youaskm3-canonical-app-http-path.md)
 
 ### MCP Stdio Server
 

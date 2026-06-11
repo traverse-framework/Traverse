@@ -2,6 +2,8 @@
 
 This is the authoritative end-to-end acceptance path for the first app-consumable Traverse flow.
 
+For the first `youaskm3` release-facing HTTP/JSON path, use [docs/youaskm3-canonical-app-http-path.md](youaskm3-canonical-app-http-path.md).
+
 Use it when you want to prove, in one deterministic run, that:
 
 - the runtime can execute the approved expedition request
