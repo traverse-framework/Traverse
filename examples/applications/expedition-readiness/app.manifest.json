@@ -1,0 +1,63 @@
+{
+  "app_id": "expedition.readiness",
+  "version": "1.0.0",
+  "schema_version": "1.0.0",
+  "workspace_defaults": {
+    "workspace_id": "expedition-local",
+    "registry_scope": "private"
+  },
+  "components": [
+    {
+      "component_id": "expedition.readiness.validate-team-readiness-component",
+      "version": "1.0.0",
+      "digest": "sha256:5647c39a1d25d8728350f9619025292a62e78a602068a2ad9b6f075751c93d99",
+      "manifest_path": "components/validate-team-readiness/component.manifest.json"
+    }
+  ],
+  "workflows": [
+    {
+      "workflow_id": "expedition.planning.plan-expedition",
+      "workflow_version": "1.0.0",
+      "path": "../../../workflows/examples/expedition/plan-expedition/workflow.json"
+    }
+  ],
+  "model_dependencies": [
+    {
+      "dependency_id": "expedition-readiness-validation-v1",
+      "requirement_ref": "045-governed-model-dependency-resolution"
+    }
+  ],
+  "config_schema": {
+    "type": "object",
+    "required": [
+      "workspace_id"
+    ],
+    "properties": {
+      "workspace_id": {
+        "type": "string"
+      },
+      "readiness_mode": {
+        "type": "string",
+        "enum": [
+          "deterministic"
+        ]
+      }
+    },
+    "additionalProperties": false
+  },
+  "default_config": {
+    "workspace_id": "expedition-local",
+    "readiness_mode": "deterministic"
+  },
+  "placement_policy": {
+    "preferred_targets": [
+      "local"
+    ],
+    "allow_fallback": false
+  },
+  "public_surfaces": [
+    "cli",
+    "http_json",
+    "mcp"
+  ]
+}

@@ -1,5 +1,6 @@
 //! Registry support for Traverse.
 
+mod application_manifest;
 mod bundle;
 pub mod dependency_resolver;
 mod events;
@@ -7,6 +8,7 @@ mod federation;
 mod graph;
 pub mod semver_resolver;
 mod workflows;
+pub use application_manifest::*;
 pub use bundle::*;
 pub use dependency_resolver::{
     DigestMismatch, MAX_TRANSITIVE_DEPTH, ResolutionError, ResolvedDependencyLock,
@@ -937,9 +939,7 @@ fn validate_connector_requirements_for_registration(
             )
         })?;
         let has_satisfying_version = matching_id.iter().any(|((_, _, version), _)| {
-            Version::parse(version)
-                .map(|parsed| parsed_range.matches(&parsed))
-                .unwrap_or(false)
+            Version::parse(version).is_ok_and(|parsed| parsed_range.matches(&parsed))
         });
         if !has_satisfying_version {
             return Err(single_error(

@@ -479,6 +479,7 @@
         "crates/traverse-contracts/",
         "crates/traverse-registry/",
         "crates/traverse-runtime/",
+        "examples/applications/",
         "specs/044-application-bundle-manifest/",
         "specs/governance/"
       ]

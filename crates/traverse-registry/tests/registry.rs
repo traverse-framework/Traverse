@@ -3,6 +3,7 @@
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use traverse_contracts::{
     BinaryFormat as ContractBinaryFormat, CapabilityContract, Condition, ConnectorRequirement,
@@ -1658,11 +1659,16 @@ fn load_example_json(relative_path: &str) -> serde_json::Value {
 }
 
 fn unique_temp_dir() -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("traverse-registry-bundle-test-{nanos}"));
+    let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let process_id = std::process::id();
+    let path = std::env::temp_dir().join(format!(
+        "traverse-registry-bundle-test-{process_id}-{nanos}-{sequence}"
+    ));
     fs::create_dir_all(&path).expect("temporary directory should create");
     path
 }
