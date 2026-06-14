@@ -1,12 +1,21 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 use traverse_contracts::{
-    CapabilityContract, ConnectorRequirement, ExecutionTarget, parse_contract,
+    CapabilityContract, ConnectorRequirement, ErrorSeverity, ExecutionTarget,
+    governed_content_digest, parse_contract,
+};
+
+use crate::{
+    ArtifactDigests, BinaryFormat, BinaryReference, CapabilityArtifactRecord,
+    CapabilityRegistration, CapabilityRegistry, ComposabilityMetadata, CompositionKind,
+    CompositionPattern, EventRegistry, ImplementationKind, LookupScope, RegistryProvenance,
+    RegistryScope, SourceKind, SourceReference, WorkflowDefinition, WorkflowRegistration,
+    WorkflowRegistry,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +34,234 @@ pub struct ApplicationBundleManifest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplicationRegistryRecord {
+    pub scope: RegistryScope,
+    pub workspace_id: String,
+    pub app_id: String,
+    pub version: String,
+    pub manifest_path: String,
+    pub manifest_digest: String,
+    pub bundle_digest: String,
+    pub registered_at: String,
+    pub readiness_status: ApplicationReadinessStatus,
+    pub components: Vec<ApplicationRegisteredComponent>,
+    pub workflows: Vec<ApplicationRegisteredWorkflow>,
+    pub inspection_link: String,
+    pub execution_links: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplicationReadinessStatus {
+    Ready,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ApplicationRegisteredComponent {
+    pub component_id: String,
+    pub component_version: String,
+    pub capability_id: String,
+    pub capability_version: String,
+    pub wasm_digest: String,
+    pub artifact_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ApplicationRegisteredWorkflow {
+    pub workflow_id: String,
+    pub workflow_version: String,
+    pub workflow_digest: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplicationRegistrationStatus {
+    Created,
+    AlreadyRegistered,
+}
+
+impl ApplicationRegistrationStatus {
+    #[must_use]
+    pub fn http_status(self) -> u16 {
+        match self {
+            Self::Created => 201,
+            Self::AlreadyRegistered => 200,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplicationRegistrationOutcome {
+    pub status: ApplicationRegistrationStatus,
+    pub record: ApplicationRegistryRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplicationRegistrationRequest {
+    pub scope: RegistryScope,
+    pub workspace_id: String,
+    pub manifest_path: PathBuf,
+    pub registered_at: String,
+    pub validator_version: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplicationRegistrationErrorCode {
+    ManifestValidationFailed,
+    MissingRequiredEvent,
+    WorkflowReadFailed,
+    WorkflowParseFailed,
+    WorkflowReferenceMismatch,
+    CapabilityRegistrationFailed,
+    WorkflowRegistrationFailed,
+    ImmutableApplicationVersionConflict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplicationRegistrationError {
+    pub code: ApplicationRegistrationErrorCode,
+    pub path: String,
+    pub message: String,
+    pub severity: ErrorSeverity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplicationRegistrationFailure {
+    pub errors: Vec<ApplicationRegistrationError>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ApplicationRegistry {
+    records: BTreeMap<(RegistryScope, String, String), ApplicationRegistryRecord>,
+}
+
+impl ApplicationRegistry {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers a complete application bundle atomically.
+    ///
+    /// The method validates the app manifest, component manifests, component
+    /// contracts, referenced WASM digests, required event references, and
+    /// workflow references before any caller-visible registry state is
+    /// replaced. Failed registration attempts leave the application,
+    /// capability, and workflow registries unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApplicationRegistrationFailure`] when manifest validation,
+    /// dependency validation, capability registration, workflow registration,
+    /// or immutable application id/version checks fail.
+    pub fn register_bundle(
+        &mut self,
+        capabilities: &mut CapabilityRegistry,
+        events: &EventRegistry,
+        workflows: &mut WorkflowRegistry,
+        request: &ApplicationRegistrationRequest,
+    ) -> Result<ApplicationRegistrationOutcome, ApplicationRegistrationFailure> {
+        let manifest = load_application_bundle_manifest(&request.manifest_path)
+            .map_err(map_manifest_failure)?;
+        let workflow_artifacts = load_application_workflows(&request.manifest_path, &manifest)?;
+        validate_component_event_references(events, request.scope, &manifest.components)?;
+
+        let mut staged_apps = self.clone();
+        let mut staged_capabilities = capabilities.clone();
+        let mut staged_workflows = workflows.clone();
+        let mut registered_components = Vec::new();
+        let mut registered_workflows = Vec::new();
+
+        for component in &manifest.components {
+            let registration =
+                build_application_capability_registration(&manifest, component, request);
+            let outcome = staged_capabilities
+                .register(registration)
+                .map_err(|failure| map_capability_registration_failure(component, failure))?;
+            registered_components.push(ApplicationRegisteredComponent {
+                component_id: component.manifest.component_id.clone(),
+                component_version: component.manifest.version.clone(),
+                capability_id: outcome.record.id,
+                capability_version: outcome.record.version,
+                wasm_digest: component.verified_wasm_digest.clone(),
+                artifact_ref: outcome.artifact.artifact_ref,
+            });
+        }
+
+        for workflow in workflow_artifacts {
+            let outcome = staged_workflows
+                .register(
+                    &staged_capabilities,
+                    WorkflowRegistration {
+                        scope: request.scope,
+                        definition: workflow.definition,
+                        workflow_path: workflow.path.display().to_string(),
+                        registered_at: request.registered_at.clone(),
+                        validator_version: request.validator_version.clone(),
+                    },
+                )
+                .map_err(map_workflow_registration_failure)?;
+            registered_workflows.push(ApplicationRegisteredWorkflow {
+                workflow_id: outcome.record.id,
+                workflow_version: outcome.record.version,
+                workflow_digest: outcome.record.workflow_digest,
+            });
+        }
+
+        let record = build_application_record(
+            request,
+            &manifest,
+            registered_components,
+            registered_workflows,
+        );
+        let key = (
+            request.scope,
+            manifest.app_id.clone(),
+            manifest.version.clone(),
+        );
+        let status = staged_apps.reconcile_or_insert(key, record.clone())?;
+
+        *self = staged_apps;
+        *capabilities = staged_capabilities;
+        *workflows = staged_workflows;
+
+        Ok(ApplicationRegistrationOutcome { status, record })
+    }
+
+    #[must_use]
+    pub fn find_exact(
+        &self,
+        scope: RegistryScope,
+        app_id: &str,
+        version: &str,
+    ) -> Option<&ApplicationRegistryRecord> {
+        self.records
+            .get(&(scope, app_id.to_string(), version.to_string()))
+    }
+
+    fn reconcile_or_insert(
+        &mut self,
+        key: (RegistryScope, String, String),
+        record: ApplicationRegistryRecord,
+    ) -> Result<ApplicationRegistrationStatus, ApplicationRegistrationFailure> {
+        if let Some(existing) = self.records.get(&key) {
+            if existing.bundle_digest == record.bundle_digest
+                && existing.components == record.components
+                && existing.workflows == record.workflows
+            {
+                return Ok(ApplicationRegistrationStatus::AlreadyRegistered);
+            }
+            return Err(single_registration_error(
+                ApplicationRegistrationErrorCode::ImmutableApplicationVersionConflict,
+                "$.version",
+                "registered application versions are immutable within a scope",
+            ));
+        }
+
+        self.records.insert(key, record);
+        Ok(ApplicationRegistrationStatus::Created)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplicationComponent {
     pub reference: ApplicationComponentRef,
     pub manifest_path: PathBuf,
@@ -35,7 +272,13 @@ pub struct ApplicationComponent {
     pub verified_wasm_digest: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LoadedApplicationWorkflow {
+    path: PathBuf,
+    definition: WorkflowDefinition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ApplicationComponentRef {
     pub component_id: String,
     pub version: String,
@@ -43,14 +286,14 @@ pub struct ApplicationComponentRef {
     pub manifest_path: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ApplicationWorkflowRef {
     pub workflow_id: String,
     pub workflow_version: String,
     pub path: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ApplicationModelDependency {
     pub dependency_id: String,
     pub requirement_ref: String,
@@ -213,6 +456,278 @@ pub fn load_application_bundle_manifest(
         placement_policy: manifest.placement_policy,
         public_surfaces: manifest.public_surfaces,
     })
+}
+
+fn load_application_workflows(
+    manifest_path: &Path,
+    manifest: &ApplicationBundleManifest,
+) -> Result<Vec<LoadedApplicationWorkflow>, ApplicationRegistrationFailure> {
+    let manifest_dir = manifest_path.parent().unwrap_or_else(|| Path::new(""));
+
+    manifest
+        .workflows
+        .iter()
+        .map(|workflow| load_application_workflow(manifest_dir, workflow))
+        .collect()
+}
+
+fn load_application_workflow(
+    manifest_dir: &Path,
+    workflow: &ApplicationWorkflowRef,
+) -> Result<LoadedApplicationWorkflow, ApplicationRegistrationFailure> {
+    let path = manifest_dir.join(&workflow.path);
+    let contents = fs::read_to_string(&path).map_err(|error| {
+        single_registration_error(
+            ApplicationRegistrationErrorCode::WorkflowReadFailed,
+            path.display().to_string(),
+            &format!(
+                "failed to read workflow {}@{} at {}: {error}",
+                workflow.workflow_id,
+                workflow.workflow_version,
+                path.display()
+            ),
+        )
+    })?;
+    let definition = serde_json::from_str::<WorkflowDefinition>(&contents).map_err(|error| {
+        single_registration_error(
+            ApplicationRegistrationErrorCode::WorkflowParseFailed,
+            path.display().to_string(),
+            &format!(
+                "failed to parse workflow {}@{} at {}: {error}",
+                workflow.workflow_id,
+                workflow.workflow_version,
+                path.display()
+            ),
+        )
+    })?;
+    if definition.id != workflow.workflow_id || definition.version != workflow.workflow_version {
+        return Err(single_registration_error(
+            ApplicationRegistrationErrorCode::WorkflowReferenceMismatch,
+            path.display().to_string(),
+            &format!(
+                "workflow reference mismatch: app declared {}@{}, workflow file contains {}@{}",
+                workflow.workflow_id, workflow.workflow_version, definition.id, definition.version
+            ),
+        ));
+    }
+
+    Ok(LoadedApplicationWorkflow { path, definition })
+}
+
+fn validate_component_event_references(
+    events: &EventRegistry,
+    scope: RegistryScope,
+    components: &[ApplicationComponent],
+) -> Result<(), ApplicationRegistrationFailure> {
+    let lookup_scope = if scope == RegistryScope::Private {
+        LookupScope::PreferPrivate
+    } else {
+        LookupScope::PublicOnly
+    };
+    for component in components {
+        for event_ref in component
+            .contract
+            .emits
+            .iter()
+            .chain(component.contract.consumes.iter())
+        {
+            let event_missing = events
+                .find_exact(lookup_scope, &event_ref.event_id, &event_ref.version)
+                .is_none();
+            if !event_missing {
+                continue;
+            }
+            let message = format!(
+                "component {} references missing event {}@{}",
+                component.manifest.component_id, event_ref.event_id, event_ref.version
+            );
+            return Err(single_registration_error(
+                ApplicationRegistrationErrorCode::MissingRequiredEvent,
+                component.contract_path.display().to_string(),
+                &message,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn build_application_capability_registration(
+    manifest: &ApplicationBundleManifest,
+    component: &ApplicationComponent,
+    request: &ApplicationRegistrationRequest,
+) -> CapabilityRegistration {
+    let artifact_ref = format!(
+        "app:{}:{}:component:{}:{}",
+        manifest.app_id,
+        manifest.version,
+        component.manifest.component_id,
+        component.manifest.version
+    );
+    let artifact = CapabilityArtifactRecord {
+        artifact_ref,
+        implementation_kind: ImplementationKind::Executable,
+        source: SourceReference {
+            kind: SourceKind::Local,
+            location: component.manifest_path.display().to_string(),
+        },
+        binary: Some(BinaryReference {
+            format: BinaryFormat::Wasm,
+            location: component.wasm_binary_path.display().to_string(),
+            signature: None,
+        }),
+        workflow_ref: None,
+        digests: ArtifactDigests {
+            source_digest: governed_content_digest(&component.contract),
+            binary_digest: Some(component.verified_wasm_digest.clone()),
+        },
+        provenance: RegistryProvenance {
+            source: format!("application_bundle:{}", manifest.app_id),
+            author: manifest.app_id.clone(),
+            created_at: request.registered_at.clone(),
+        },
+    };
+
+    CapabilityRegistration {
+        scope: request.scope,
+        contract: component.contract.clone(),
+        contract_path: component.contract_path.display().to_string(),
+        artifact,
+        registered_at: request.registered_at.clone(),
+        tags: vec![format!("app:{}", manifest.app_id)],
+        composability: ComposabilityMetadata {
+            kind: CompositionKind::Atomic,
+            patterns: vec![CompositionPattern::Validation],
+            provides: vec![component.contract.id.clone()],
+            requires: component
+                .manifest
+                .dependencies
+                .iter()
+                .map(|dependency| dependency.component_id.clone())
+                .collect(),
+        },
+        governing_spec: "044-application-bundle-manifest".to_string(),
+        validator_version: request.validator_version.clone(),
+    }
+}
+
+fn build_application_record(
+    request: &ApplicationRegistrationRequest,
+    manifest: &ApplicationBundleManifest,
+    components: Vec<ApplicationRegisteredComponent>,
+    workflows: Vec<ApplicationRegisteredWorkflow>,
+) -> ApplicationRegistryRecord {
+    let manifest_digest = application_manifest_digest(manifest);
+    let bundle_digest = application_bundle_digest(manifest, &components, &workflows);
+    ApplicationRegistryRecord {
+        scope: request.scope,
+        workspace_id: request.workspace_id.clone(),
+        app_id: manifest.app_id.clone(),
+        version: manifest.version.clone(),
+        manifest_path: request.manifest_path.display().to_string(),
+        manifest_digest,
+        bundle_digest,
+        registered_at: request.registered_at.clone(),
+        readiness_status: ApplicationReadinessStatus::Ready,
+        components,
+        workflows,
+        inspection_link: format!("/v1/apps/{}/{}", manifest.app_id, manifest.version),
+        execution_links: manifest
+            .workflows
+            .iter()
+            .map(|workflow| {
+                format!(
+                    "/v1/workflows/{}/{}",
+                    workflow.workflow_id, workflow.workflow_version
+                )
+            })
+            .collect(),
+    }
+}
+
+fn application_manifest_digest(manifest: &ApplicationBundleManifest) -> String {
+    let value = serde_json::json!({
+        "app_id": manifest.app_id,
+        "version": manifest.version,
+        "schema_version": manifest.schema_version,
+        "workspace_defaults": manifest.workspace_defaults,
+        "components": manifest.components.iter().map(|component| serde_json::json!({
+            "component_id": component.reference.component_id,
+            "version": component.reference.version,
+            "digest": component.reference.digest,
+            "manifest_path": component.reference.manifest_path,
+        })).collect::<Vec<_>>(),
+        "workflows": manifest.workflows,
+        "model_dependencies": manifest.model_dependencies,
+        "config_schema": manifest.config_schema,
+        "default_config": manifest.default_config,
+        "placement_policy": manifest.placement_policy,
+        "public_surfaces": manifest.public_surfaces,
+    });
+    format!("sha256:{}", sha256_hex(value.to_string().as_bytes()))
+}
+
+fn application_bundle_digest(
+    manifest: &ApplicationBundleManifest,
+    components: &[ApplicationRegisteredComponent],
+    workflows: &[ApplicationRegisteredWorkflow],
+) -> String {
+    let value = serde_json::json!({
+        "app_id": manifest.app_id,
+        "version": manifest.version,
+        "components": components,
+        "workflows": workflows,
+    });
+    format!("sha256:{}", sha256_hex(value.to_string().as_bytes()))
+}
+
+fn map_manifest_failure(failure: ApplicationManifestFailure) -> ApplicationRegistrationFailure {
+    ApplicationRegistrationFailure {
+        errors: failure
+            .errors
+            .into_iter()
+            .map(|error| ApplicationRegistrationError {
+                code: ApplicationRegistrationErrorCode::ManifestValidationFailed,
+                path: error.path,
+                message: error.message,
+                severity: ErrorSeverity::Error,
+            })
+            .collect(),
+    }
+}
+
+fn map_capability_registration_failure(
+    component: &ApplicationComponent,
+    failure: crate::RegistryFailure,
+) -> ApplicationRegistrationFailure {
+    ApplicationRegistrationFailure {
+        errors: failure
+            .errors
+            .into_iter()
+            .map(|error| ApplicationRegistrationError {
+                code: ApplicationRegistrationErrorCode::CapabilityRegistrationFailed,
+                path: component.contract_path.display().to_string(),
+                message: error.message,
+                severity: error.severity,
+            })
+            .collect(),
+    }
+}
+
+fn map_workflow_registration_failure(
+    failure: crate::WorkflowFailure,
+) -> ApplicationRegistrationFailure {
+    ApplicationRegistrationFailure {
+        errors: failure
+            .errors
+            .into_iter()
+            .map(|error| ApplicationRegistrationError {
+                code: ApplicationRegistrationErrorCode::WorkflowRegistrationFailed,
+                path: error.path,
+                message: error.message,
+                severity: error.severity,
+            })
+            .collect(),
+    }
 }
 
 fn ensure_unique_component_refs(
@@ -514,6 +1029,21 @@ fn single_error(
             code,
             path,
             message,
+        }],
+    }
+}
+
+fn single_registration_error(
+    code: ApplicationRegistrationErrorCode,
+    path: impl Into<String>,
+    message: &str,
+) -> ApplicationRegistrationFailure {
+    ApplicationRegistrationFailure {
+        errors: vec![ApplicationRegistrationError {
+            code,
+            path: path.into(),
+            message: message.to_string(),
+            severity: ErrorSeverity::Error,
         }],
     }
 }

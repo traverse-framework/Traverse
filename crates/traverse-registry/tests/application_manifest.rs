@@ -7,7 +7,12 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use traverse_registry::{ApplicationManifestErrorCode, load_application_bundle_manifest};
+use traverse_contracts::parse_event_contract;
+use traverse_registry::{
+    ApplicationManifestErrorCode, ApplicationRegistrationErrorCode, ApplicationRegistrationRequest,
+    ApplicationRegistrationStatus, ApplicationRegistry, CapabilityRegistry, EventRegistration,
+    EventRegistry, LookupScope, RegistryScope, WorkflowRegistry, load_application_bundle_manifest,
+};
 
 #[test]
 fn loads_checked_in_application_manifest_with_real_wasm_component() {
@@ -527,6 +532,458 @@ fn rejects_component_dependencies_without_concrete_version_and_digest() {
     );
 }
 
+#[test]
+fn registers_application_bundle_atomically_with_created_status() {
+    let fixture = AppFixture::new("register-created");
+    fixture.write_hello_world_bundle();
+    let mut app_registry = ApplicationRegistry::new();
+    let mut capability_registry = CapabilityRegistry::new();
+    let event_registry = EventRegistry::new();
+    let mut workflow_registry = WorkflowRegistry::new();
+
+    let outcome = app_registry
+        .register_bundle(
+            &mut capability_registry,
+            &event_registry,
+            &mut workflow_registry,
+            &fixture.registration_request(),
+        )
+        .expect("valid application bundle should register atomically");
+
+    assert_eq!(outcome.status, ApplicationRegistrationStatus::Created);
+    assert_eq!(outcome.status.http_status(), 201);
+    assert_eq!(outcome.record.app_id, "hello.world.app");
+    assert_eq!(outcome.record.components.len(), 1);
+    assert_eq!(outcome.record.workflows.len(), 1);
+    assert!(
+        app_registry
+            .find_exact(RegistryScope::Private, "hello.world.app", "1.0.0")
+            .is_some()
+    );
+    assert!(
+        capability_registry
+            .find_exact(LookupScope::PreferPrivate, "hello.world.say-hello", "1.0.0")
+            .is_some()
+    );
+    assert!(
+        workflow_registry
+            .find_exact(LookupScope::PreferPrivate, "hello.world.say-hello", "1.0.0")
+            .is_some()
+    );
+}
+
+#[test]
+fn reregistering_unchanged_application_bundle_returns_stable_200() {
+    let fixture = AppFixture::new("register-idempotent");
+    fixture.write_hello_world_bundle();
+    let mut app_registry = ApplicationRegistry::new();
+    let mut capability_registry = CapabilityRegistry::new();
+    let event_registry = EventRegistry::new();
+    let mut workflow_registry = WorkflowRegistry::new();
+
+    let first = app_registry
+        .register_bundle(
+            &mut capability_registry,
+            &event_registry,
+            &mut workflow_registry,
+            &fixture.registration_request(),
+        )
+        .expect("first application registration should succeed");
+    let second = app_registry
+        .register_bundle(
+            &mut capability_registry,
+            &event_registry,
+            &mut workflow_registry,
+            &fixture.registration_request(),
+        )
+        .expect("unchanged application registration should be idempotent");
+
+    assert_eq!(first.status, ApplicationRegistrationStatus::Created);
+    assert_eq!(
+        second.status,
+        ApplicationRegistrationStatus::AlreadyRegistered
+    );
+    assert_eq!(second.status.http_status(), 200);
+    assert_eq!(first.record.bundle_digest, second.record.bundle_digest);
+}
+
+#[test]
+fn failed_application_registration_writes_no_partial_state() {
+    let fixture = AppFixture::new("register-rollback");
+    fixture.write_hello_world_bundle();
+    let mut app_registry = ApplicationRegistry::new();
+    let mut capability_registry = CapabilityRegistry::new();
+    let event_registry = EventRegistry::new();
+    let mut workflow_registry = WorkflowRegistry::new();
+    let first = app_registry
+        .register_bundle(
+            &mut capability_registry,
+            &event_registry,
+            &mut workflow_registry,
+            &fixture.registration_request(),
+        )
+        .expect("baseline registration should succeed");
+    fixture.write_bad_workflow_bundle();
+
+    let failure = app_registry
+        .register_bundle(
+            &mut capability_registry,
+            &event_registry,
+            &mut workflow_registry,
+            &fixture.registration_request(),
+        )
+        .expect_err("changed app bundle with invalid workflow must fail");
+
+    assert_eq!(
+        failure.errors[0].code,
+        ApplicationRegistrationErrorCode::WorkflowReferenceMismatch
+    );
+    let record = app_registry
+        .find_exact(RegistryScope::Private, "hello.world.app", "1.0.0")
+        .expect("existing app record should remain after failed registration");
+    assert_eq!(record.bundle_digest, first.record.bundle_digest);
+    assert!(
+        capability_registry
+            .find_exact(LookupScope::PreferPrivate, "hello.world.say-hello", "1.0.0")
+            .is_some()
+    );
+    assert!(
+        workflow_registry
+            .find_exact(LookupScope::PreferPrivate, "hello.world.say-hello", "1.0.0")
+            .is_some()
+    );
+    assert!(
+        workflow_registry
+            .find_exact(LookupScope::PreferPrivate, "hello.world.changed", "1.0.0")
+            .is_none()
+    );
+}
+
+#[test]
+fn application_registration_reports_missing_manifest_as_validation_failure() {
+    let fixture = AppFixture::new("register-missing-manifest");
+    let mut app_registry = ApplicationRegistry::new();
+    let mut capability_registry = CapabilityRegistry::new();
+    let event_registry = EventRegistry::new();
+    let mut workflow_registry = WorkflowRegistry::new();
+
+    let failure = app_registry
+        .register_bundle(
+            &mut capability_registry,
+            &event_registry,
+            &mut workflow_registry,
+            &fixture.registration_request(),
+        )
+        .expect_err("missing app manifest should fail through registration");
+
+    assert_eq!(
+        failure.errors[0].code,
+        ApplicationRegistrationErrorCode::ManifestValidationFailed
+    );
+}
+
+#[test]
+fn application_registration_rejects_missing_workflow_file() {
+    let fixture = AppFixture::new("register-missing-workflow");
+    let wasm_digest = fixture.write_hello_component("hello world executable bytes");
+    fixture.write_hello_app_manifest(
+        &wasm_digest,
+        &json!([{
+            "workflow_id": "hello.world.say-hello",
+            "workflow_version": "1.0.0",
+            "path": "missing-workflow.json"
+        }]),
+    );
+    let mut app_registry = ApplicationRegistry::new();
+    let mut capability_registry = CapabilityRegistry::new();
+    let event_registry = EventRegistry::new();
+    let mut workflow_registry = WorkflowRegistry::new();
+
+    let failure = app_registry
+        .register_bundle(
+            &mut capability_registry,
+            &event_registry,
+            &mut workflow_registry,
+            &fixture.registration_request(),
+        )
+        .expect_err("missing workflow should fail registration");
+
+    assert_eq!(
+        failure.errors[0].code,
+        ApplicationRegistrationErrorCode::WorkflowReadFailed
+    );
+}
+
+#[test]
+fn application_registration_rejects_invalid_workflow_json() {
+    let fixture = AppFixture::new("register-invalid-workflow");
+    let wasm_digest = fixture.write_hello_component("hello world executable bytes");
+    let workflow_path = fixture.root.join("invalid-workflow.json");
+    fs::write(&workflow_path, "{ not json").expect("invalid workflow fixture should write");
+    fixture.write_hello_app_manifest(
+        &wasm_digest,
+        &json!([{
+            "workflow_id": "hello.world.say-hello",
+            "workflow_version": "1.0.0",
+            "path": workflow_path
+        }]),
+    );
+    let mut app_registry = ApplicationRegistry::new();
+    let mut capability_registry = CapabilityRegistry::new();
+    let event_registry = EventRegistry::new();
+    let mut workflow_registry = WorkflowRegistry::new();
+
+    let failure = app_registry
+        .register_bundle(
+            &mut capability_registry,
+            &event_registry,
+            &mut workflow_registry,
+            &fixture.registration_request(),
+        )
+        .expect_err("invalid workflow JSON should fail registration");
+
+    assert_eq!(
+        failure.errors[0].code,
+        ApplicationRegistrationErrorCode::WorkflowParseFailed
+    );
+}
+
+#[test]
+fn application_registration_rejects_missing_event_reference() {
+    let fixture = AppFixture::new("register-missing-event");
+    let wasm_digest = fixture.write_wasm("component bytes");
+    fixture.write_component_manifest(&json!({
+        "wasm_digest": format!("sha256:{wasm_digest}"),
+        "dependencies": []
+    }));
+    fixture.write_app_manifest(&json!([component_ref(
+        "expedition.readiness.validate-team-readiness-component",
+        "1.0.0",
+        &format!("sha256:{wasm_digest}"),
+        "components/validate-team-readiness/component.manifest.json",
+    )]));
+    let mut app_registry = ApplicationRegistry::new();
+    let mut capability_registry = CapabilityRegistry::new();
+    let event_registry = EventRegistry::new();
+    let mut workflow_registry = WorkflowRegistry::new();
+
+    let failure = app_registry
+        .register_bundle(
+            &mut capability_registry,
+            &event_registry,
+            &mut workflow_registry,
+            &fixture.registration_request(),
+        )
+        .expect_err("missing referenced event should fail registration");
+
+    assert_eq!(
+        failure.errors[0].code,
+        ApplicationRegistrationErrorCode::MissingRequiredEvent
+    );
+}
+
+#[test]
+fn application_registration_checks_all_component_event_references() {
+    let fixture = AppFixture::new("register-partial-event");
+    let wasm_digest = fixture.write_wasm("component bytes");
+    fixture.write_component_manifest(&json!({
+        "wasm_digest": format!("sha256:{wasm_digest}"),
+        "dependencies": []
+    }));
+    fixture.write_app_manifest(&json!([component_ref(
+        "expedition.readiness.validate-team-readiness-component",
+        "1.0.0",
+        &format!("sha256:{wasm_digest}"),
+        "components/validate-team-readiness/component.manifest.json",
+    )]));
+    let mut app_registry = ApplicationRegistry::new();
+    let mut capability_registry = CapabilityRegistry::new();
+    let mut event_registry = EventRegistry::new();
+    register_event_fixture(
+        &mut event_registry,
+        "team-readiness-validated",
+        "expedition.planning.team-readiness-validated",
+    );
+    let mut workflow_registry = WorkflowRegistry::new();
+
+    let failure = app_registry
+        .register_bundle(
+            &mut capability_registry,
+            &event_registry,
+            &mut workflow_registry,
+            &fixture.registration_request(),
+        )
+        .expect_err("second missing event reference should fail registration");
+
+    assert_eq!(
+        failure.errors[0].code,
+        ApplicationRegistrationErrorCode::MissingRequiredEvent
+    );
+    assert!(
+        failure.errors[0]
+            .message
+            .contains("conditions-summary-assessed")
+    );
+}
+
+#[test]
+fn application_registration_maps_workflow_registration_failure() {
+    let fixture = AppFixture::new("register-workflow-failure");
+    let wasm_digest = fixture.write_hello_component("hello world executable bytes");
+    let workflow_path = fixture.write_workflow("hello.world.say-hello", "hello.world.missing");
+    fixture.write_hello_app_manifest(
+        &wasm_digest,
+        &json!([{
+            "workflow_id": "hello.world.say-hello",
+            "workflow_version": "1.0.0",
+            "path": workflow_path
+        }]),
+    );
+    let mut app_registry = ApplicationRegistry::new();
+    let mut capability_registry = CapabilityRegistry::new();
+    let event_registry = EventRegistry::new();
+    let mut workflow_registry = WorkflowRegistry::new();
+
+    let failure = app_registry
+        .register_bundle(
+            &mut capability_registry,
+            &event_registry,
+            &mut workflow_registry,
+            &fixture.registration_request(),
+        )
+        .expect_err("workflow missing capability reference should fail");
+
+    assert_eq!(
+        failure.errors[0].code,
+        ApplicationRegistrationErrorCode::WorkflowRegistrationFailed
+    );
+}
+
+#[test]
+fn application_registration_maps_capability_registration_failure() {
+    let fixture = AppFixture::new("register-capability-failure");
+    fixture.write_hello_world_bundle();
+    let mut seed_app_registry = ApplicationRegistry::new();
+    let mut capability_registry = CapabilityRegistry::new();
+    let event_registry = EventRegistry::new();
+    let mut workflow_registry = WorkflowRegistry::new();
+    seed_app_registry
+        .register_bundle(
+            &mut capability_registry,
+            &event_registry,
+            &mut workflow_registry,
+            &fixture.registration_request(),
+        )
+        .expect("seed application registration should succeed");
+    let changed_digest = fixture.write_hello_component("changed executable bytes");
+    let workflow_path = fixture.write_workflow("hello.world.say-hello", "hello.world.say-hello");
+    fixture.write_hello_app_manifest(
+        &changed_digest,
+        &json!([{
+            "workflow_id": "hello.world.say-hello",
+            "workflow_version": "1.0.0",
+            "path": workflow_path
+        }]),
+    );
+    let mut new_app_registry = ApplicationRegistry::new();
+
+    let failure = new_app_registry
+        .register_bundle(
+            &mut capability_registry,
+            &event_registry,
+            &mut workflow_registry,
+            &fixture.registration_request(),
+        )
+        .expect_err("changed component metadata must fail capability registration");
+
+    assert_eq!(
+        failure.errors[0].code,
+        ApplicationRegistrationErrorCode::CapabilityRegistrationFailed
+    );
+    assert!(
+        new_app_registry
+            .find_exact(RegistryScope::Private, "hello.world.app", "1.0.0")
+            .is_none()
+    );
+}
+
+#[test]
+fn application_registration_rejects_changed_bundle_for_same_app_version() {
+    let fixture = AppFixture::new("register-app-conflict");
+    fixture.write_hello_world_bundle();
+    let mut app_registry = ApplicationRegistry::new();
+    let mut capability_registry = CapabilityRegistry::new();
+    let event_registry = EventRegistry::new();
+    let mut workflow_registry = WorkflowRegistry::new();
+    app_registry
+        .register_bundle(
+            &mut capability_registry,
+            &event_registry,
+            &mut workflow_registry,
+            &fixture.registration_request(),
+        )
+        .expect("baseline registration should succeed");
+    let wasm_digest = fixture.write_hello_component("hello world executable bytes");
+    let workflow_path = fixture.write_workflow("hello.world.say-hello", "hello.world.say-hello");
+    fixture.write_hello_app_manifest(
+        &wasm_digest,
+        &json!([
+            {
+                "workflow_id": "hello.world.say-hello",
+                "workflow_version": "1.0.0",
+                "path": workflow_path
+            },
+            {
+                "workflow_id": "hello.world.say-hello",
+                "workflow_version": "1.0.0",
+                "path": workflow_path
+            }
+        ]),
+    );
+
+    let failure = app_registry
+        .register_bundle(
+            &mut capability_registry,
+            &event_registry,
+            &mut workflow_registry,
+            &fixture.registration_request(),
+        )
+        .expect_err("changed app bundle for same version must fail");
+
+    assert_eq!(
+        failure.errors[0].code,
+        ApplicationRegistrationErrorCode::ImmutableApplicationVersionConflict
+    );
+}
+
+#[test]
+fn application_registration_supports_public_scope_lookup_path() {
+    let fixture = AppFixture::new("register-public");
+    fixture.write_hello_world_bundle();
+    let mut app_registry = ApplicationRegistry::new();
+    let mut capability_registry = CapabilityRegistry::new();
+    let event_registry = EventRegistry::new();
+    let mut workflow_registry = WorkflowRegistry::new();
+    let mut request = fixture.registration_request();
+    request.scope = RegistryScope::Public;
+
+    let outcome = app_registry
+        .register_bundle(
+            &mut capability_registry,
+            &event_registry,
+            &mut workflow_registry,
+            &request,
+        )
+        .expect("public application bundle should register");
+
+    assert_eq!(outcome.status, ApplicationRegistrationStatus::Created);
+    assert!(
+        app_registry
+            .find_exact(RegistryScope::Public, "hello.world.app", "1.0.0")
+            .is_some()
+    );
+}
+
 struct AppFixture {
     root: PathBuf,
 }
@@ -558,15 +1015,23 @@ impl AppFixture {
     }
 
     fn write_app_manifest(&self, components: &serde_json::Value) {
+        self.write_app_manifest_with_workflows(components, &json!([]));
+    }
+
+    fn write_app_manifest_with_workflows(
+        &self,
+        components: &serde_json::Value,
+        workflows: &serde_json::Value,
+    ) {
         let app = json!({
-            "app_id": "expedition.readiness",
+            "app_id": "hello.world.app",
             "version": "1.0.0",
             "schema_version": "1.0.0",
             "workspace_defaults": {
                 "workspace_id": "test"
             },
             "components": components,
-            "workflows": [],
+            "workflows": workflows,
             "model_dependencies": [],
             "config_schema": {
                 "type": "object"
@@ -643,6 +1108,132 @@ impl AppFixture {
         fs::write(self.wasm_path(), contents.as_bytes()).expect("wasm fixture should write");
         sha256_hex(contents.as_bytes())
     }
+
+    fn registration_request(&self) -> ApplicationRegistrationRequest {
+        ApplicationRegistrationRequest {
+            scope: RegistryScope::Private,
+            workspace_id: "test-workspace".to_string(),
+            manifest_path: self.app_manifest_path(),
+            registered_at: "2026-06-13T00:00:00Z".to_string(),
+            validator_version: "test".to_string(),
+        }
+    }
+
+    fn write_hello_world_bundle(&self) {
+        let wasm_digest = self.write_hello_component("hello world executable bytes");
+        let workflow_path = self.write_workflow("hello.world.say-hello", "hello.world.say-hello");
+        self.write_hello_app_manifest(
+            &wasm_digest,
+            &json!([{
+                "workflow_id": "hello.world.say-hello",
+                "workflow_version": "1.0.0",
+                "path": workflow_path
+            }]),
+        );
+    }
+
+    fn write_bad_workflow_bundle(&self) {
+        let wasm_digest = self.write_hello_component("hello world executable bytes");
+        let workflow_path = self.write_workflow("hello.world.changed", "hello.world.say-hello");
+        self.write_hello_app_manifest(
+            &wasm_digest,
+            &json!([{
+                "workflow_id": "hello.world.say-hello",
+                "workflow_version": "1.0.0",
+                "path": workflow_path
+            }]),
+        );
+    }
+
+    fn write_hello_component(&self, contents: &str) -> String {
+        let wasm_digest = self.write_wasm(contents);
+        let contract_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../contracts/examples/hello-world/capabilities/say-hello/contract.json");
+        self.write_component_manifest(&json!({
+            "component_id": "hello.world.say-hello-component",
+            "capability_id": "hello.world.say-hello",
+            "wasm_digest": format!("sha256:{wasm_digest}"),
+            "contract_path": contract_path,
+            "dependencies": []
+        }));
+        wasm_digest
+    }
+
+    fn write_hello_app_manifest(&self, wasm_digest: &str, workflows: &serde_json::Value) {
+        self.write_app_manifest_with_workflows(
+            &json!([component_ref(
+                "hello.world.say-hello-component",
+                "1.0.0",
+                &format!("sha256:{wasm_digest}"),
+                "components/validate-team-readiness/component.manifest.json",
+            )]),
+            workflows,
+        );
+    }
+
+    fn write_workflow(&self, workflow_id: &str, node_capability_id: &str) -> String {
+        let path = self.root.join("workflow.json");
+        let workflow = json!({
+            "kind": "workflow_definition",
+            "schema_version": "1.0.0",
+            "id": workflow_id,
+            "name": "say-hello",
+            "version": "1.0.0",
+            "lifecycle": "active",
+            "owner": {
+                "team": "traverse-core",
+                "contact": "enrico.piovesan10@gmail.com"
+            },
+            "summary": "Run the minimal hello-world greeting flow as one governed workflow-backed example.",
+            "inputs": {
+                "schema": {
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": {
+                        "name": {
+                            "type": "string"
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "outputs": {
+                "schema": {
+                    "type": "object",
+                    "required": ["name", "greeting"],
+                    "properties": {
+                        "name": {
+                            "type": "string"
+                        },
+                        "greeting": {
+                            "type": "string"
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "nodes": [
+                {
+                    "node_id": "say_hello",
+                    "capability_id": node_capability_id,
+                    "capability_version": "1.0.0",
+                    "input": {
+                        "from_workflow_input": ["name"]
+                    },
+                    "output": {
+                        "to_workflow_state": ["name", "greeting"]
+                    }
+                }
+            ],
+            "edges": [],
+            "start_node": "say_hello",
+            "terminal_nodes": ["say_hello"],
+            "tags": ["hello-world", "registration-test"],
+            "governing_spec": "007-workflow-registry-traversal"
+        });
+        fs::write(&path, workflow.to_string()).expect("workflow fixture should write");
+        path.display().to_string()
+    }
 }
 
 fn make_unreadable(path: &PathBuf) {
@@ -660,6 +1251,25 @@ fn component_ref(id: &str, version: &str, digest: &str, manifest_path: &str) -> 
         "digest": digest,
         "manifest_path": manifest_path
     })
+}
+
+fn register_event_fixture(registry: &mut EventRegistry, event_dir: &str, expected_id: &str) {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../../contracts/examples/expedition/events/{event_dir}/contract.json"
+    ));
+    let contents = fs::read_to_string(&path).expect("event contract fixture should read");
+    let contract = parse_event_contract(&contents).expect("event contract fixture should parse");
+    assert_eq!(contract.id, expected_id);
+    registry
+        .register(EventRegistration {
+            scope: RegistryScope::Private,
+            contract,
+            contract_path: path.display().to_string(),
+            registered_at: "2026-06-13T00:00:00Z".to_string(),
+            governing_spec: "011-event-registry".to_string(),
+            validator_version: "test".to_string(),
+        })
+        .expect("event fixture should register");
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
