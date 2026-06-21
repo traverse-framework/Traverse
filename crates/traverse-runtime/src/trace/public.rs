@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use traverse_contracts::ViolationRecord;
+use traverse_registry::ModelResolutionEvidence;
 
 /// Outcome of a capability execution recorded in the public trace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +39,9 @@ pub struct PublicTraceEntry {
     /// Aggregate contractual enforcement violations (if any).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub violations: Vec<ViolationRecord>,
+    /// Non-sensitive governed model selection evidence, when inference was resolved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_resolution: Vec<ModelResolutionEvidence>,
 }
 
 impl PublicTraceEntry {
@@ -63,6 +67,7 @@ impl PublicTraceEntry {
             outcome,
             duration_ms,
             violations: Vec::new(),
+            model_resolution: Vec::new(),
         }
     }
 }

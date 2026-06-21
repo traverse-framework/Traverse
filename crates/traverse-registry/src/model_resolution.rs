@@ -11,7 +11,7 @@ pub enum ModelResolutionPhase {
     Execution,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelResolutionRequest {
     pub phase: ModelResolutionPhase,
     pub requested_interface_id: String,
@@ -90,7 +90,7 @@ impl ModelCandidateRejectionCode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelCandidateEvaluation {
     pub candidate_id: String,
     pub provider_capability_id: String,
@@ -104,7 +104,7 @@ pub struct ModelCandidateEvaluation {
     pub manifest_order: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelectedModelCandidate {
     pub candidate_id: String,
     pub provider_capability_id: String,
@@ -115,7 +115,7 @@ pub struct SelectedModelCandidate {
     pub selection_reason: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelResolutionEvidence {
     pub phase: ModelResolutionPhase,
     pub interface_id: String,

@@ -1,3 +1,8 @@
+use traverse_contracts::ExecutionTarget;
+use traverse_registry::{
+    ModelCandidateEvaluation, ModelCandidateReadiness, ModelCandidateRejectionCode,
+    ModelResolutionEvidence, ModelResolutionPhase, SelectedModelCandidate,
+};
 use traverse_runtime::trace::{
     PrivateTraceEntry, PublicTraceEntry, TraceOutcome, TraceStore, new_trace_id_and_time,
 };
@@ -106,6 +111,21 @@ fn no_raw_input_in_any_trace_field() {
 }
 
 #[test]
+fn public_trace_entry_exposes_redacted_model_resolution_evidence() {
+    let mut public = make_public("traverse.inference.generate");
+    public.model_resolution.push(model_resolution_evidence());
+
+    let serialized = serde_json::to_string(&public).unwrap_or_default();
+
+    assert!(serialized.contains("model_resolution"));
+    assert!(serialized.contains("ollama.local.generate"));
+    assert!(serialized.contains("llama3.2:3b"));
+    assert!(!serialized.contains("private prompt"));
+    assert!(!serialized.contains("raw source text"));
+    assert!(!serialized.contains("sk-local-secret"));
+}
+
+#[test]
 fn get_trace_without_private_flag_returns_public_only() -> Result<(), String> {
     let mut store = TraceStore::new();
     let pub_entry = make_public("cap.a");
@@ -174,4 +194,36 @@ fn list_traces_filtered_by_capability_id() {
 fn unknown_trace_id_returns_none() {
     let store = TraceStore::new();
     assert!(store.get("nonexistent-id").is_none());
+}
+
+fn model_resolution_evidence() -> ModelResolutionEvidence {
+    ModelResolutionEvidence {
+        phase: ModelResolutionPhase::Execution,
+        interface_id: "traverse.inference.generate".to_string(),
+        requested_interface_id: "traverse.inference.generate".to_string(),
+        requested_placement: ExecutionTarget::Local,
+        selected: Some(SelectedModelCandidate {
+            candidate_id: "ollama-llama-3-2".to_string(),
+            provider_capability_id: "traverse.inference.generate".to_string(),
+            provider_implementation_id: "ollama.local.generate".to_string(),
+            model_identifier: "llama3.2:3b".to_string(),
+            placement_target: ExecutionTarget::Local,
+            priority: 10,
+            selection_reason: "selected highest-priority passing candidate".to_string(),
+        }),
+        candidates: vec![ModelCandidateEvaluation {
+            candidate_id: "ollama-llama-3-2".to_string(),
+            provider_capability_id: "traverse.inference.generate".to_string(),
+            provider_implementation_id: "ollama.local.generate".to_string(),
+            model_identifier: "llama3.2:3b".to_string(),
+            placement_target: ExecutionTarget::Local,
+            priority: 10,
+            readiness: ModelCandidateReadiness::Ready,
+            rejection_code: Option::<ModelCandidateRejectionCode>::None,
+            reason: "candidate passed availability, interface, placement, and context checks"
+                .to_string(),
+            manifest_order: 0,
+        }],
+        failure_code: Option::<ModelCandidateRejectionCode>::None,
+    }
 }

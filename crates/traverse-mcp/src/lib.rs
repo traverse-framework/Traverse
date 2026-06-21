@@ -13,8 +13,8 @@ pub use stdio_server::*;
 
 use std::collections::HashMap;
 use traverse_registry::{
-    CapabilityRegistry, DiscoveryQuery, EventRegistry, LookupScope, RegistryScope,
-    ResolvedCapability, ResolvedEvent, ResolvedWorkflow, WorkflowRegistry,
+    CapabilityRegistry, DiscoveryQuery, EventRegistry, LookupScope, ModelResolutionEvidence,
+    RegistryScope, ResolvedCapability, ResolvedEvent, ResolvedWorkflow, WorkflowRegistry,
 };
 use traverse_runtime::{
     LocalExecutor, Runtime, RuntimeErrorCode, RuntimeExecutionOutcome, RuntimeRequest,
@@ -287,6 +287,7 @@ where
         Ok(McpExecutionResponse {
             result: outcome.result.clone(),
             trace: outcome.trace.clone(),
+            model_resolution: outcome.trace.model_resolution.clone(),
             observation_messages: observation_messages_from_outcome(&outcome),
         })
     }
@@ -385,6 +386,7 @@ pub enum McpArtifactDetail {
 pub struct McpExecutionResponse {
     pub result: RuntimeResult,
     pub trace: RuntimeTrace,
+    pub model_resolution: Vec<ModelResolutionEvidence>,
     pub observation_messages: Vec<McpObservationMessage>,
 }
 
@@ -420,6 +422,7 @@ pub struct McpStateMessage {
 pub struct McpTraceMessage {
     pub sequence: u64,
     pub trace: RuntimeTrace,
+    pub model_resolution: Vec<ModelResolutionEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -469,6 +472,7 @@ pub fn observation_messages_from_outcome(
     messages.push(McpObservationMessage::Trace(Box::new(McpTraceMessage {
         sequence,
         trace: outcome.trace.clone(),
+        model_resolution: outcome.trace.model_resolution.clone(),
     })));
     sequence += 1;
 
@@ -556,8 +560,11 @@ mod tests {
     use traverse_registry::{
         ArtifactDigests, BinaryFormat, BinaryReference, CapabilityArtifactRecord,
         CapabilityRegistration, ComposabilityMetadata, CompositionKind, CompositionPattern,
-        EventRegistration, RegistryProvenance, SourceKind, SourceReference, WorkflowDefinition,
-        WorkflowNode, WorkflowNodeInput, WorkflowNodeOutput, WorkflowRegistration,
+        EventRegistration, ModelCandidateEvaluation, ModelCandidateReadiness,
+        ModelCandidateRejectionCode, ModelResolutionEvidence, ModelResolutionPhase,
+        RegistryProvenance, SelectedModelCandidate, SourceKind, SourceReference,
+        WorkflowDefinition, WorkflowNode, WorkflowNodeInput, WorkflowNodeOutput,
+        WorkflowRegistration,
     };
     use traverse_runtime::{
         LocalExecutionFailure, RuntimeContext, RuntimeIntent, RuntimeLookup, RuntimeLookupScope,
@@ -772,6 +779,32 @@ mod tests {
                 ..
             }))
         ));
+    }
+
+    #[test]
+    fn mcp_observation_report_exposes_model_resolution_evidence() {
+        let capability_registry = capability_registry_fixture();
+        let workflow_registry = workflow_registry_fixture(&capability_registry);
+        let runtime = runtime_fixture(&capability_registry, &workflow_registry);
+        let mut outcome = runtime.execute(runtime_request());
+        outcome.trace = outcome
+            .trace
+            .with_model_resolution(vec![model_resolution_evidence()]);
+
+        let messages = observation_messages_from_outcome(&outcome);
+        let trace_message = messages.iter().find_map(|message| match message {
+            McpObservationMessage::Trace(trace) => Some(trace),
+            _ => None,
+        });
+
+        assert_eq!(
+            trace_message.map(|message| message.model_resolution.as_slice()),
+            Some(outcome.trace.model_resolution.as_slice())
+        );
+        assert_eq!(
+            trace_message.map(|message| message.trace.model_resolution.as_slice()),
+            Some(outcome.trace.model_resolution.as_slice())
+        );
     }
 
     fn runtime_fixture<'a>(
@@ -1125,6 +1158,38 @@ mod tests {
                 identity: None,
             },
             governing_spec: "006-runtime-request-execution".to_string(),
+        }
+    }
+
+    fn model_resolution_evidence() -> ModelResolutionEvidence {
+        ModelResolutionEvidence {
+            phase: ModelResolutionPhase::Execution,
+            interface_id: "traverse.inference.generate".to_string(),
+            requested_interface_id: "traverse.inference.generate".to_string(),
+            requested_placement: traverse_contracts::ExecutionTarget::Local,
+            selected: Some(SelectedModelCandidate {
+                candidate_id: "ollama-llama-3-2".to_string(),
+                provider_capability_id: "traverse.inference.generate".to_string(),
+                provider_implementation_id: "ollama.local.generate".to_string(),
+                model_identifier: "llama3.2:3b".to_string(),
+                placement_target: traverse_contracts::ExecutionTarget::Local,
+                priority: 10,
+                selection_reason: "selected highest-priority passing candidate".to_string(),
+            }),
+            candidates: vec![ModelCandidateEvaluation {
+                candidate_id: "ollama-llama-3-2".to_string(),
+                provider_capability_id: "traverse.inference.generate".to_string(),
+                provider_implementation_id: "ollama.local.generate".to_string(),
+                model_identifier: "llama3.2:3b".to_string(),
+                placement_target: traverse_contracts::ExecutionTarget::Local,
+                priority: 10,
+                readiness: ModelCandidateReadiness::Ready,
+                rejection_code: Option::<ModelCandidateRejectionCode>::None,
+                reason: "candidate passed availability, interface, placement, and context checks"
+                    .to_string(),
+                manifest_order: 0,
+            }],
+            failure_code: Option::<ModelCandidateRejectionCode>::None,
         }
     }
 
