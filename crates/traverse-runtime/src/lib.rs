@@ -25,9 +25,9 @@ use traverse_contracts::{
 };
 use traverse_registry::{
     CapabilityRegistration, CapabilityRegistry, DiscoveryQuery, ImplementationKind, LookupScope,
-    RegistrationOutcome, RegistryFailure, RegistryScope, ResolutionError, ResolvedCapability,
-    WorkflowFailure, WorkflowRegistration, WorkflowRegistrationOutcome, WorkflowRegistry,
-    resolve_dependencies, resolve_version_range,
+    ModelResolutionEvidence, RegistrationOutcome, RegistryFailure, RegistryScope, ResolutionError,
+    ResolvedCapability, WorkflowFailure, WorkflowRegistration, WorkflowRegistrationOutcome,
+    WorkflowRegistry, resolve_dependencies, resolve_version_range,
 };
 
 const RUNTIME_REQUEST_KIND: &str = "runtime_request";
@@ -433,6 +433,8 @@ pub struct RuntimeTrace {
     pub emitted_events: Vec<traverse_contracts::EventReference>,
     #[serde(default)]
     pub workflow_evidence: Option<WorkflowTraversalEvidence>,
+    #[serde(default)]
+    pub model_resolution: Vec<ModelResolutionEvidence>,
     pub state_transitions: Vec<RuntimeTransitionRecord>,
     pub state_machine_validation: RuntimeStateMachineValidationEvidence,
     pub candidate_collection: CandidateCollectionRecord,
@@ -504,6 +506,16 @@ pub struct OTelSpanEvent {
 }
 
 impl RuntimeTrace {
+    /// Returns a trace with synchronized public model resolution evidence.
+    #[must_use]
+    pub fn with_model_resolution(mut self, evidence: Vec<ModelResolutionEvidence>) -> Self {
+        self.decision_evidence
+            .model_resolution
+            .clone_from(&evidence);
+        self.model_resolution = evidence;
+        self
+    }
+
     /// Returns the ID of the selected capability, or `None` if no capability was selected.
     #[must_use]
     pub fn selected_capability_id(&self) -> Option<&str> {
@@ -539,6 +551,8 @@ impl RuntimeTrace {
 pub struct TraceDecisionEvidence {
     pub candidate_collection: CandidateCollectionRecord,
     pub selection: SelectionRecord,
+    #[serde(default)]
+    pub model_resolution: Vec<ModelResolutionEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1445,6 +1459,7 @@ fn terminal_failure(context: FailureContext) -> RuntimeExecutionOutcome {
         decision_evidence: TraceDecisionEvidence {
             candidate_collection: context.candidate_collection.clone(),
             selection: context.selection.clone(),
+            model_resolution: Vec::new(),
         },
         state_progression: TraceStateProgression {
             state_events: context.state_events.clone(),
@@ -1459,6 +1474,7 @@ fn terminal_failure(context: FailureContext) -> RuntimeExecutionOutcome {
         },
         emitted_events: context.emitted_events,
         workflow_evidence: context.workflow_evidence,
+        model_resolution: Vec::new(),
         state_transitions: context.state_transitions,
         state_machine_validation: context.state_machine_validation,
         candidate_collection: context.candidate_collection,
@@ -2013,6 +2029,7 @@ fn successful_execution_outcome(
         decision_evidence: TraceDecisionEvidence {
             candidate_collection: candidate_collection.clone(),
             selection: selection.clone(),
+            model_resolution: Vec::new(),
         },
         state_progression: TraceStateProgression {
             state_events: finished.events.clone(),
@@ -2027,6 +2044,7 @@ fn successful_execution_outcome(
         },
         emitted_events,
         workflow_evidence,
+        model_resolution: Vec::new(),
         state_transitions: finished.transitions.clone(),
         state_machine_validation: finished.validation.clone(),
         candidate_collection,
@@ -2962,8 +2980,10 @@ mod tests {
         ArtifactDigests, ArtifactSignature, ArtifactSignatureScheme, BinaryFormat, BinaryReference,
         CapabilityArtifactRecord, CapabilityRegistration, CapabilityRegistry,
         CapabilityRegistryRecord, ComposabilityMetadata, CompositionKind, CompositionPattern,
-        DiscoveryIndexEntry, ImplementationKind, RegistryProvenance, RegistryScope,
-        ResolvedCapability, SourceKind, SourceReference,
+        DiscoveryIndexEntry, ImplementationKind, ModelCandidateReadiness,
+        ModelCandidateRejectionCode, ModelResolutionEvidence, ModelResolutionPhase,
+        RegistryProvenance, RegistryScope, ResolvedCapability, SelectedModelCandidate, SourceKind,
+        SourceReference,
     };
 
     const HEX_TABLE: &[u8; 16] = b"0123456789abcdef";
@@ -4453,6 +4473,24 @@ mod tests {
     }
 
     #[test]
+    fn runtime_trace_exposes_non_sensitive_model_resolution_evidence() {
+        let trace = successful_trace().with_model_resolution(vec![model_resolution_evidence()]);
+        let serialized = serde_json::to_string(&trace).unwrap_or_default();
+
+        assert_eq!(trace.model_resolution.len(), 1);
+        assert_eq!(
+            trace.decision_evidence.model_resolution,
+            trace.model_resolution
+        );
+        assert!(serialized.contains("model_resolution"));
+        assert!(serialized.contains("ollama.local.generate"));
+        assert!(serialized.contains("llama3.2:3b"));
+        assert!(!serialized.contains("private prompt"));
+        assert!(!serialized.contains("raw source text"));
+        assert!(!serialized.contains("sk-local-secret"));
+    }
+
+    #[test]
     fn output_returns_value_on_success() {
         let trace = successful_trace();
         assert_eq!(trace.output(), Some(&json!({"draft_id": "draft"})));
@@ -4474,5 +4512,37 @@ mod tests {
     fn is_success_false_on_error() {
         let trace = failed_trace();
         assert!(!trace.is_success());
+    }
+
+    fn model_resolution_evidence() -> ModelResolutionEvidence {
+        ModelResolutionEvidence {
+            phase: ModelResolutionPhase::Execution,
+            interface_id: "traverse.inference.generate".to_string(),
+            requested_interface_id: "traverse.inference.generate".to_string(),
+            requested_placement: ExecutionTarget::Local,
+            selected: Some(SelectedModelCandidate {
+                candidate_id: "ollama-llama-3-2".to_string(),
+                provider_capability_id: "traverse.inference.generate".to_string(),
+                provider_implementation_id: "ollama.local.generate".to_string(),
+                model_identifier: "llama3.2:3b".to_string(),
+                placement_target: ExecutionTarget::Local,
+                priority: 10,
+                selection_reason: "selected highest-priority passing candidate".to_string(),
+            }),
+            candidates: vec![traverse_registry::ModelCandidateEvaluation {
+                candidate_id: "ollama-llama-3-2".to_string(),
+                provider_capability_id: "traverse.inference.generate".to_string(),
+                provider_implementation_id: "ollama.local.generate".to_string(),
+                model_identifier: "llama3.2:3b".to_string(),
+                placement_target: ExecutionTarget::Local,
+                priority: 10,
+                readiness: ModelCandidateReadiness::Ready,
+                rejection_code: Option::<ModelCandidateRejectionCode>::None,
+                reason: "candidate passed availability, interface, placement, and context checks"
+                    .to_string(),
+                manifest_order: 0,
+            }],
+            failure_code: Option::<ModelCandidateRejectionCode>::None,
+        }
     }
 }
