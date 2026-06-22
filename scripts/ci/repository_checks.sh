@@ -38,6 +38,7 @@ required_files=(
   "docs/youaskm3-published-artifact-validation.md"
   "docs/youaskm3-compatibility-conformance-suite.md"
   "docs/youaskm3-real-shell-validation.md"
+  "docs/downstream-app-mvp-conformance.md"
   "docs/wasm-agent-authoring-guide.md"
   "docs/wasm-microservice-authoring-guide.md"
   "specs/023-downstream-publication-strategy/spec.md"
@@ -77,6 +78,12 @@ required_files=(
   "scripts/ci/react_demo_live_adapter_smoke.sh"
   "scripts/ci/mcp_stdio_server_execution_report_smoke.sh"
   "scripts/ci/youaskm3_compatibility_conformance.sh"
+  "scripts/ci/downstream_app_mvp_conformance.sh"
+  "scripts/ci/downstream_app_bundle_registration_smoke.sh"
+  "scripts/ci/downstream_wasm_workflow_smoke.sh"
+  "scripts/ci/downstream_model_dependency_smoke.sh"
+  "scripts/ci/downstream_http_json_smoke.sh"
+  "scripts/ci/downstream_mcp_smoke.sh"
   "scripts/ci/browser_consumer_package_smoke.sh"
   "scripts/ci/youaskm3_integration_validation.sh"
   "scripts/ci/youaskm3_published_artifact_validation.sh"
@@ -366,6 +373,12 @@ grep -q "Traverse Owns" docs/youaskm3-v0.3.0-integration-readiness.md
 grep -q "youaskm3 Owns" docs/youaskm3-v0.3.0-integration-readiness.md
 grep -q "First-Release Readiness Checklist" docs/youaskm3-v0.3.0-integration-readiness.md
 grep -q "bash scripts/ci/youaskm3_compatibility_conformance.sh" docs/youaskm3-v0.3.0-integration-readiness.md
+grep -q "bash scripts/ci/downstream_app_mvp_conformance.sh" docs/downstream-app-mvp-conformance.md
+grep -q "TRAVERSE_RUN_LOCAL_OLLAMA_CONFORMANCE=1" docs/downstream-app-mvp-conformance.md
+grep -q "044-application-bundle-manifest" docs/downstream-app-mvp-conformance.md
+grep -q "045-governed-model-dependency-resolution" docs/downstream-app-mvp-conformance.md
+grep -q "downstream app MVP conformance suite" scripts/ci/downstream_app_mvp_conformance.sh
+grep -q "downstream_app_mvp_conformance.sh" docs/youaskm3-compatibility-conformance-suite.md
 grep -q "docs/youaskm3-v0.3.0-integration-readiness.md" docs/youaskm3-integration-validation.md
 grep -q "docs/youaskm3-v0.3.0-integration-readiness.md" docs/v0.3.0-public-surface-compatibility.md
 grep -q "docs/v0.3.0-public-surface-compatibility.md" README.md

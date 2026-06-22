@@ -15,6 +15,7 @@ The suite covers the released downstream path end to end:
 - the live browser-hosted consumer path
 - the app-facing MCP consumption path
 - the first real `youaskm3` integration path
+- the Traverse-side downstream app MVP conformance suite
 - the browser-hosted `youaskm3` real shell validation path
 
 It does not define new runtime behavior. It verifies that the supported Traverse surfaces continue to fit together as a released consumer set.
@@ -40,6 +41,7 @@ bash scripts/ci/youaskm3_compatibility_conformance.sh
 ```
 
 That command runs the release-prep evidence first and then verifies the live browser-hosted and MCP-facing downstream paths.
+It also runs `bash scripts/ci/downstream_app_mvp_conformance.sh` to prove the shared Traverse-side app manifest, WASM workflow, HTTP/JSON, MCP, and model dependency evidence required by the first knowledge-app MVP.
 
 ## Expected Evidence
 
@@ -49,6 +51,7 @@ The suite should prove:
 - the supported browser-hosted path is runnable
 - the supported MCP-facing path is runnable
 - the first real `youaskm3` integration path can be followed without private Traverse knowledge
+- the downstream app MVP conformance path passes
 - the observed runtime outcome is completed
 
 ## Known Failure Modes
