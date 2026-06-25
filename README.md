@@ -15,6 +15,8 @@ Traverse keeps it in one contract and runs it anywhere — with a full execution
 
 Traverse is the working implementation of [Universal Microservices Architecture](https://www.universalmicroservices.com/).
 
+This is personal research and development by [Enrico Piovesan](https://enricopiovesan.com), built to prove in code the ideas behind [Universal Microservices Architecture](https://www.universalmicroservices.com/).
+
 ---
 
 ## Quick Start
@@ -88,6 +90,8 @@ Scaffolds a governed app bundle. Add your capability contracts, workflows, and W
 
 ## Documentation
 
+### Onboarding and tutorial path
+
 | Goal | Start here | Continue with |
 |---|---|---|
 | First runnable flow | [quickstart.md](quickstart.md) | [docs/app-consumable-entry-path.md](docs/app-consumable-entry-path.md) |
@@ -97,6 +101,37 @@ Scaffolds a governed app bundle. Add your capability contracts, workflows, and W
 | Build WASM capabilities | [docs/wasm-agent-authoring-guide.md](docs/wasm-agent-authoring-guide.md) | [docs/wasm-microservice-authoring-guide.md](docs/wasm-microservice-authoring-guide.md) |
 | Integrate a downstream app | [docs/app-consumable-consumer-bundle.md](docs/app-consumable-consumer-bundle.md) | [docs/youaskm3-integration-validation.md](docs/youaskm3-integration-validation.md) |
 | Troubleshoot a failure | [docs/troubleshooting.md](docs/troubleshooting.md) | [docs/quality-standards.md](docs/quality-standards.md) |
+
+### Consumer and release surfaces
+
+- [docs/releases/v0.4.0.md](docs/releases/v0.4.0.md) — current release notes
+- [docs/app-consumable-consumer-bundle.md](docs/app-consumable-consumer-bundle.md) — versioned consumer bundle
+- [docs/app-consumable-package-release-pointer.md](docs/app-consumable-package-release-pointer.md) — package release pointer
+- [docs/packaged-traverse-runtime-artifact.md](docs/packaged-traverse-runtime-artifact.md) — packaged runtime artifact
+- [docs/packaged-traverse-mcp-server-artifact.md](docs/packaged-traverse-mcp-server-artifact.md) — packaged MCP server artifact
+- [docs/youaskm3-canonical-app-http-path.md](docs/youaskm3-canonical-app-http-path.md) — canonical HTTP app path
+- [docs/youaskm3-canonical-mcp-client-path.md](docs/youaskm3-canonical-mcp-client-path.md) — canonical MCP client path
+- [docs/youaskm3-integration-validation.md](docs/youaskm3-integration-validation.md) — youaskm3 integration validation
+- [docs/youaskm3-published-artifact-validation.md](docs/youaskm3-published-artifact-validation.md) — published-artifact validation
+- [docs/youaskm3-compatibility-conformance-suite.md](docs/youaskm3-compatibility-conformance-suite.md) — compatibility conformance suite
+- [docs/youaskm3-real-shell-validation.md](docs/youaskm3-real-shell-validation.md) — real shell validation
+- [docs/mcp-real-agent-exercise.md](docs/mcp-real-agent-exercise.md) — real AI agent exercise for the MCP surface
+
+### v0.3.0 consumer paths
+
+- [docs/v0.3.0-public-surface-compatibility.md](docs/v0.3.0-public-surface-compatibility.md) — v0.3.0 public surface compatibility
+- [docs/v0.3.0-source-build-consumer-packaging.md](docs/v0.3.0-source-build-consumer-packaging.md) — source-build packaging for v0.3.0 consumers
+- [docs/v0.3.0-downstream-validation-path.md](docs/v0.3.0-downstream-validation-path.md) — downstream validation path for v0.3.0
+- [docs/youaskm3-v0.3.0-integration-readiness.md](docs/youaskm3-v0.3.0-integration-readiness.md) — v0.3.0 integration readiness index
+
+### Reference
+
+- [docs/adapter-boundaries.md](docs/adapter-boundaries.md) — adapter and portability boundaries
+- [docs/compatibility-policy.md](docs/compatibility-policy.md) — versioning and compatibility
+- [docs/troubleshooting.md](docs/troubleshooting.md) — shortest path through common failures
+- [docs/what-can-i-build.md](docs/what-can-i-build.md) — concrete app and integration patterns
+- [docs/benchmarks.md](docs/benchmarks.md) — measured latency numbers
+- [docs/decision-log.md](docs/decision-log.md) — consolidated architecture decisions
 
 ---
 
@@ -124,6 +159,8 @@ Please read before opening a PR:
 - [docs/quality-standards.md](docs/quality-standards.md)
 
 All work follows the governance workflow below. Every PR must be backed by an approved spec.
+
+[GitHub Project 1](https://github.com/users/enricopiovesan/projects/1/) is the canonical board. All active work has an issue, a project item, and a PR.
 
 ---
 
