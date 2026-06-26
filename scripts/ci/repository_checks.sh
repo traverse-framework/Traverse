@@ -208,12 +208,22 @@ grep -q "docs/youaskm3-compatibility-conformance-suite.md" README.md
 grep -q "docs/youaskm3-real-shell-validation.md" README.md
 grep -q "docs/youaskm3-published-artifact-validation.md" README.md
 grep -q "docs/youaskm3-compatibility-conformance-suite.md" docs/app-consumable-entry-path.md
+grep -q "docs/downstream-app-mvp-conformance.md" docs/app-consumable-entry-path.md
 grep -q "docs/youaskm3-real-shell-validation.md" docs/app-consumable-entry-path.md
 grep -q "docs/youaskm3-published-artifact-validation.md" docs/app-consumable-entry-path.md
 grep -q "docs/youaskm3-compatibility-conformance-suite.md" docs/mcp-consumption-validation.md
 grep -q "docs/youaskm3-compatibility-conformance-suite.md" docs/youaskm3-integration-validation.md
 grep -q "docs/youaskm3-real-shell-validation.md" docs/youaskm3-integration-validation.md
 grep -q "docs/youaskm3-published-artifact-validation.md" docs/youaskm3-integration-validation.md
+grep -q "docs/downstream-app-mvp-conformance.md" docs/youaskm3-integration-validation.md
+grep -q "traverse-cli app validate --manifest <path> --json" docs/cli-reference.md
+grep -q "traverse-cli app register --manifest <path> --workspace <workspace-id> --json" docs/cli-reference.md
+grep -q "status: already_registered" docs/cli-reference.md
+grep -q "not an HTTP app registration endpoint" docs/cli-reference.md
+grep -q "traverse-cli app validate --manifest <path> --json" docs/youaskm3-canonical-app-http-path.md
+grep -q "traverse-cli app register --manifest <path> --workspace <workspace-id> --json" docs/youaskm3-canonical-app-http-path.md
+grep -q "eventing-oriented contracts" docs/youaskm3-canonical-app-http-path.md
+grep -q "downstream_public_app_registration_smoke.sh" docs/youaskm3-integration-validation.md
 grep -q "docs/mcp-real-agent-exercise.md" docs/youaskm3-integration-validation.md
 grep -q "youaskm3 compatibility conformance suite" docs/youaskm3-compatibility-conformance-suite.md
 grep -q "version pairing" docs/youaskm3-compatibility-conformance-suite.md
