@@ -1,4 +1,4 @@
-[![Traverse](https://github.com/user-attachments/assets/aeafaaf8-650d-4489-bf5e-bd386f0bcaf0)](https://enricopiovesan.com/)
+[![Traverse](https://github.com/user-attachments/assets/aeafaaf8-650d-4489-bf5e-bd386f0bcaf0)](https://traverse-framework.com)
 
 
 # Traverse
@@ -159,7 +159,7 @@ Please read before opening a PR:
 
 All work follows the governance workflow below. Every PR must be backed by an approved spec.
 
-[GitHub Project 1](https://github.com/users/enricopiovesan/projects/1/) is the canonical board. All active work has an issue, a project item, and a PR.
+[GitHub Project](https://github.com/orgs/traverse-framework/projects) is the canonical board. All active work has an issue, a project item, and a PR.
 
 ---
 
