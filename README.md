@@ -3,11 +3,11 @@
 
 # Traverse
 
-[![CI](https://github.com/enricopiovesan/Traverse/actions/workflows/ci.yml/badge.svg)](https://github.com/enricopiovesan/Traverse/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/enricopiovesan/Traverse/actions/workflows/ci.yml)
+[![CI](https://github.com/traverse-framework/Traverse/actions/workflows/ci.yml/badge.svg)](https://github.com/traverse-framework/Traverse/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/traverse-framework/Traverse/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.94%2B-orange)](https://www.rust-lang.org/)
-[![Version](https://img.shields.io/badge/version-v0.4.0-blue)](https://github.com/enricopiovesan/Traverse/releases)
+[![Version](https://img.shields.io/badge/version-v0.4.0-blue)](https://github.com/traverse-framework/Traverse/releases)
 
 Your business logic runs in the browser, on your server, and in a cloud function.
 They drift. You maintain three versions of the same behavior.
@@ -23,7 +23,7 @@ Traverse is the working implementation of [Universal Microservices Architecture]
 **Requirements**: Rust 1.94+
 
 ```bash
-git clone https://github.com/enricopiovesan/Traverse.git
+git clone https://github.com/traverse-framework/Traverse.git
 cd Traverse
 cargo build
 cargo run -p traverse-cli -- bundle inspect examples/expedition/registry-bundle/manifest.json
