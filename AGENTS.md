@@ -90,7 +90,7 @@ If a `claude/issue-<NUMBER>-*` branch exists → **STOP**. Report:
 gh issue edit <NUMBER> --repo traverse-framework/Traverse --add-label "agent:codex"
 
 # Get project item ID with bounded output
-gh project item-list 1 --owner enricopiovesan --format json --limit 300 \
+gh project item-list 1 --owner traverse-framework --format json --limit 300 \
   --jq '.items[] | select(.content.number == <NUMBER>) | .id'
 
 # Set Agent → Codex
